@@ -26,6 +26,7 @@ export const chapterContentSlides = pgTable("chapter_content_slides", {
     slideIndex: integer().notNull(),
     audioUrl: varchar({ length: 500 }),
     narration: json().notNull(),
+    captions: json(),
     html: text(),
     revealData: json().notNull(),
     createdAt: timestamp("created_at").defaultNow(),
