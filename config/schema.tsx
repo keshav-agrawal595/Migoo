@@ -31,16 +31,3 @@ export const chapterContentSlides = pgTable("chapter_content_slides", {
     revealData: json().notNull(),
     createdAt: timestamp("created_at").defaultNow(),
 })
-export const chapterContent = pgTable("chapter_content", {
-    id: integer().primaryKey().generatedAlwaysAsIdentity(),
-    courseId: varchar({ length: 255 }).notNull().references(() => coursesTable.courseId),
-    chapterId: varchar({ length: 255 }).notNull(),
-    slideId: varchar({ length: 255 }).notNull().unique(),
-    slideIndex: integer().notNull(),
-    audioUrl: varchar({ length: 500 }),
-    narration: json().notNull(),
-    captions: json(),
-    html: text(),
-    revealData: json().notNull(),
-    createdAt: timestamp("created_at").defaultNow(),
-})

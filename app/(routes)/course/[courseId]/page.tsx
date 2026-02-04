@@ -1,15 +1,16 @@
 "use client"
-import React, { useEffect, useState } from 'react'
-import CourseInfoCard from './_components/CourseInfoCard'
-import { useParams } from 'next/navigation';
-import axios from 'axios';
 import { Course } from '@/type/CourseType';
-import CourseChapters from './_components/CourseChapters';
+import axios from 'axios';
+import { useParams } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import CourseChapters from './_components/CourseChapters';
+import CourseInfoCard from './_components/CourseInfoCard';
 
 function CoursePage() {
     const { courseId } = useParams();
     const [courseDetails, setCourseDetails] = useState<Course>();
+    const isGenerating = useRef(false);
 
     useEffect(() => {
         GetCourseDetails();
@@ -39,8 +40,12 @@ function CoursePage() {
             });
 
             if (!res.data?.chapterContentSlides || res.data.chapterContentSlides.length === 0) {
-                console.log("✅ CONDITION TRUE: No slides found, generating content...");
-                GenerateVideoContent(res.data);
+                if (!isGenerating.current) {
+                    console.log("✅ CONDITION TRUE: No slides found, generating content...");
+                    GenerateVideoContent(res.data);
+                } else {
+                    console.log("⚠️ Generation already in progress, skipping...");
+                }
             } else {
                 console.log("❌ CONDITION FALSE: Slides already exist in database!");
                 console.log("Number of existing slides:", res.data.chapterContentSlides.length);
@@ -59,6 +64,7 @@ function CoursePage() {
 
     const GenerateVideoContent = async (course: Course) => {
         console.log("🎬 Starting Video Content Generation for course:", course.courseId);
+        isGenerating.current = true;
 
         if (!course?.courseLayout?.chapters || course.courseLayout.chapters.length === 0) {
             console.log("⚠️ No chapters found to generate content for");
@@ -88,8 +94,6 @@ function CoursePage() {
                     id: loadingToast
                 });
 
-                GetCourseDetails();
-
             } catch (error: any) {
                 console.error(`❌ Error generating content for Chapter ${i + 1}:`, error);
                 toast.error(`Failed to generate content for Chapter ${i + 1}: ${error.message}`, {
@@ -97,6 +101,10 @@ function CoursePage() {
                 });
             }
         }
+
+        // Mark generation as complete
+        console.log("✅ All chapters processed!");
+        isGenerating.current = false;
     }
 
     return (
