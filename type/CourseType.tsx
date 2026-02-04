@@ -31,6 +31,7 @@ export type ChapterContentSlide = {
     slideIndex: number;
     audioUrl: string;
     narration: { fullText: string };
+    captions?: any;
     html: string;
     revealData: string[];
     createdAt: string;
