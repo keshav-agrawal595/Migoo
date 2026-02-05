@@ -105,6 +105,10 @@ function CoursePage() {
         // Mark generation as complete
         console.log("✅ All chapters processed!");
         isGenerating.current = false;
+
+        // Refresh course data to show the newly generated slides
+        console.log("🔄 Refreshing course data to load generated slides...");
+        await GetCourseDetails();
     }
 
     return (
