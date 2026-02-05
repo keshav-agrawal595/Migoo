@@ -71,7 +71,8 @@ async function getTranscriptionResult(transcriptionId: string, maxRetries: numbe
     throw new Error('Transcription timed out after maximum retries');
 }
 
-// Convert word-level timestamps to sentence chunks
+// Convert word-level timestamps to smaller phrase chunks (3-7 words)
+// This creates more granular timing for smoother reveal animations
 function wordsToChunks(words: any[]): { timestamp: [number, number] }[] {
     if (!words || words.length === 0) return [];
 
@@ -79,17 +80,34 @@ function wordsToChunks(words: any[]): { timestamp: [number, number] }[] {
     let currentChunk: any[] = [];
     let chunkStartTime = words[0].start;
 
+    // Common conjunctions and transition words that indicate natural phrase boundaries
+    const phraseBreakers = ['and', 'but', 'or', 'so', 'yet', 'for', 'nor', 'because',
+        'although', 'while', 'when', 'where', 'if', 'then'];
+
     for (let i = 0; i < words.length; i++) {
         const word = words[i];
         currentChunk.push(word);
 
-        // Check if this is end of a sentence or chunk
-        // Create chunk on: punctuation, max 10 words, or last word
-        const isPunctuation = word.text.match(/[.!?]$/);
-        const isMaxLength = currentChunk.length >= 10;
+        // Check for natural phrase boundaries
+        const isPunctuation = word.text.match(/[.!?;,]$/); // Added comma and semicolon
+        const isConjunction = phraseBreakers.includes(word.text.toLowerCase().replace(/[.,!?;]$/, ''));
+        const isMaxLength = currentChunk.length >= 7; // Reduced from 10 to 7
+        const isMinLengthMet = currentChunk.length >= 3; // Ensure at least 3 words
         const isLastWord = i === words.length - 1;
 
-        if (isPunctuation || isMaxLength || isLastWord) {
+        // Create chunk on:
+        // 1. Sentence endings (.!?)
+        // 2. Commas/semicolons (if min length met)
+        // 3. After conjunctions (if min length met)
+        // 4. Max 7 words
+        // 5. Last word
+        const shouldCreateChunk =
+            isPunctuation ||
+            (isConjunction && isMinLengthMet) ||
+            isMaxLength ||
+            isLastWord;
+
+        if (shouldCreateChunk) {
             const chunkEndTime = word.end;
             chunks.push({
                 timestamp: [chunkStartTime, chunkEndTime]
@@ -103,6 +121,7 @@ function wordsToChunks(words: any[]): { timestamp: [number, number] }[] {
         }
     }
 
+    console.log(`📊 Created ${chunks.length} chunks from ${words.length} words (avg ${(words.length / chunks.length).toFixed(1)} words/chunk)`);
     return chunks;
 }
 
@@ -169,14 +188,14 @@ export async function POST(req: NextRequest) {
             });
         }
 
-        // Generate video slides using Groq AI
+        // Generate video slides using Groq AI (using most capable model for detailed content)
         const result = await groq.json(
             GENERATE_VIDEO_PROMPT,
             JSON.stringify(chapter),
             {
-                model: 'openai/gpt-oss-120b',
-                temperature: 0.7,
-                max_tokens: 4000
+                model: 'llama-3.3-70b-versatile',  // Most capable Groq model
+                temperature: 0.8,  // Slightly higher for more creative, detailed content
+                max_tokens: 12000  // Much higher for detailed paragraphs and long narration
             }
         );
 
@@ -186,15 +205,19 @@ export async function POST(req: NextRequest) {
             length: Array.isArray(result) ? result.length : 'N/A'
         });
 
+        // Handle case where AI returns single object instead of array
+        let VideoContentJson;
         if (!Array.isArray(result)) {
-            throw new Error('Groq API did not return an array of slides');
+            console.log('⚠️ AI returned single object instead of array. Wrapping in array...');
+            VideoContentJson = [result];
+        } else {
+            VideoContentJson = result;
         }
 
-        if (result.length > 0) {
-            console.log('📊 First slide preview:', JSON.stringify(result[0], null, 2));
+        if (VideoContentJson.length > 0) {
+            console.log('📊 First slide preview:', JSON.stringify(VideoContentJson[0], null, 2));
         }
 
-        const VideoContentJson = result;
         const insertedSlides = [];
 
         // Process each slide: generate audio, upload to Vercel Blob, and save to database
