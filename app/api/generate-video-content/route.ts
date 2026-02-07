@@ -1,14 +1,214 @@
 import { db } from "@/config/db";
-import { groq } from "@/config/groq";
+import { gemini } from "@/config/gemini";
 import { chapterContentSlides } from "@/config/schema";
 import { GENERATE_VIDEO_PROMPT } from "@/data/Prompt";
 import { put } from "@vercel/blob";
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
-// ElevenLabs Speech-to-Text Helper Functions
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🧪 TESTING MODE CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+const TESTING_MODE = true;  // ⚠️ SET TO false TO GENERATE ALL CHAPTERS
+const TEST_CHAPTER_INDEX = 0;  // Generate only this chapter (0 = first chapter)
+
+console.log('🧪 TESTING MODE:', TESTING_MODE ? 'ENABLED (Single Chapter Only)' : 'DISABLED (All Chapters)');
+if (TESTING_MODE) {
+    console.log(`📌 Will only generate chapter at index: ${TEST_CHAPTER_INDEX}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIO UTILITIES: WAV Merging
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface WavHeader {
+    sampleRate: number;
+    numChannels: number;
+    bitsPerSample: number;
+}
+
+function parseWavHeader(buffer: Buffer): WavHeader | null {
+    if (buffer.length < 44) return null;
+
+    const sampleRate = buffer.readUInt32LE(24);
+    const numChannels = buffer.readUInt16LE(22);
+    const bitsPerSample = buffer.readUInt16LE(34);
+
+    return { sampleRate, numChannels, bitsPerSample };
+}
+
+function mergeWavFiles(audioBuffers: Buffer[]): Buffer {
+    console.log(`🔗 Merging ${audioBuffers.length} WAV files...`);
+
+    if (audioBuffers.length === 0) throw new Error('No audio buffers to merge');
+    if (audioBuffers.length === 1) return audioBuffers[0];
+
+    // Extract audio data from each chunk (skip 44-byte header)
+    const audioDataChunks: Buffer[] = [];
+    let totalDataSize = 0;
+
+    const firstHeader = parseWavHeader(audioBuffers[0]);
+    if (!firstHeader) throw new Error('Invalid WAV header in first chunk');
+
+    for (let i = 0; i < audioBuffers.length; i++) {
+        const audioData = audioBuffers[i].slice(44); // Skip 44-byte WAV header
+        audioDataChunks.push(audioData);
+        totalDataSize += audioData.length;
+    }
+
+    // Create merged audio data
+    const mergedData = Buffer.concat(audioDataChunks);
+
+    // Create new WAV header
+    const newHeader = Buffer.alloc(44);
+    newHeader.write('RIFF', 0);
+    newHeader.writeUInt32LE(mergedData.length + 36, 4); // File size - 8
+    newHeader.write('WAVE', 8);
+    newHeader.write('fmt ', 12);
+    newHeader.writeUInt32LE(16, 16); // fmt chunk size
+    newHeader.writeUInt16LE(1, 20); // PCM format
+    newHeader.writeUInt16LE(firstHeader.numChannels, 22);
+    newHeader.writeUInt32LE(firstHeader.sampleRate, 24);
+    newHeader.writeUInt32LE(firstHeader.sampleRate * firstHeader.numChannels * (firstHeader.bitsPerSample / 8), 28); // byte rate
+    newHeader.writeUInt16LE(firstHeader.numChannels * (firstHeader.bitsPerSample / 8), 32); // block align
+    newHeader.writeUInt16LE(firstHeader.bitsPerSample, 34);
+    newHeader.write('data', 36);
+    newHeader.writeUInt32LE(mergedData.length, 40);
+
+    const mergedBuffer = Buffer.concat([newHeader, mergedData]);
+
+    console.log(`✅ Merged successfully: ${audioBuffers.length} chunks → ${mergedBuffer.length} bytes`);
+    return mergedBuffer;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TTS: Sarvam AI with Smart Chunking
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function chunkTextForTTS(text: string, maxLength: number = 2400): string[] {
+    console.log(`✂️ Chunking text: ${text.length} characters`);
+
+    if (text.length <= maxLength) {
+        console.log(`✅ No chunking needed (text is ${text.length} chars)`);
+        return [text];
+    }
+
+    const chunks: string[] = [];
+
+    // Split by sentences first
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    let currentChunk = '';
+
+    for (const sentence of sentences) {
+        const trimmed = sentence.trim();
+        if (!trimmed) continue;
+
+        // If adding this sentence exceeds limit, save current chunk and start new one
+        if (currentChunk.length + trimmed.length + 1 > maxLength) {
+            if (currentChunk) {
+                chunks.push(currentChunk.trim());
+            }
+            currentChunk = trimmed;
+        } else {
+            currentChunk += (currentChunk ? ' ' : '') + trimmed;
+        }
+    }
+
+    // Add remaining chunk
+    if (currentChunk) {
+        chunks.push(currentChunk.trim());
+    }
+
+    console.log(`✅ Split into ${chunks.length} chunks:`, chunks.map(c => c.length));
+    return chunks;
+}
+
+async function generateAudioWithSarvam(text: string): Promise<Buffer> {
+    if (text.length > 2500) {
+        throw new Error(`Text too long for Sarvam AI: ${text.length} chars (max 2500)`);
+    }
+
+    console.log(`🎤 Generating audio: ${text.length} chars`);
+
+    const response = await fetch('https://api.sarvam.ai/text-to-speech', {
+        method: 'POST',
+        headers: {
+            'api-subscription-key': process.env.SARVAM_API_KEY!,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            text: text,
+            target_language_code: "en-IN",
+            speaker: "kabir",
+            pace: 1.05,
+            speech_sample_rate: 22050,
+            enable_preprocessing: true,
+            model: "bulbul:v3",
+            temperature: 0.6,
+            output_audio_codec: "wav"
+        })
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Sarvam TTS failed (${response.status}): ${errorText}`);
+    }
+
+    const result = await response.json();
+
+    if (!result.audios || result.audios.length === 0) {
+        throw new Error('No audio data from Sarvam AI');
+    }
+
+    const audioBuffer = Buffer.from(result.audios[0], 'base64');
+    console.log(`✅ Audio generated: ${audioBuffer.length} bytes`);
+
+    return audioBuffer;
+}
+
+async function generateAudioForLongText(text: string): Promise<Buffer> {
+    console.log(`🎵 Processing long text: ${text.length} chars`);
+
+    const chunks = chunkTextForTTS(text, 2400);
+
+    if (chunks.length === 1) {
+        return await generateAudioWithSarvam(chunks[0]);
+    }
+
+    console.log(`🔄 Generating ${chunks.length} audio chunks...`);
+    const audioBuffers: Buffer[] = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+        console.log(`🔊 Chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`);
+
+        try {
+            const audioBuffer = await generateAudioWithSarvam(chunks[i]);
+            audioBuffers.push(audioBuffer);
+            console.log(`✅ Chunk ${i + 1} generated: ${audioBuffer.length} bytes`);
+        } catch (error: any) {
+            console.error(`❌ Chunk ${i + 1} failed:`, error.message);
+            throw new Error(`Audio generation failed at chunk ${i + 1}: ${error.message}`);
+        }
+
+        // Small delay between chunks to avoid rate limiting
+        if (i < chunks.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    }
+
+    console.log(`🔗 Merging ${audioBuffers.length} audio chunks...`);
+    const mergedBuffer = mergeWavFiles(audioBuffers);
+    console.log(`✅ Final audio: ${mergedBuffer.length} bytes`);
+
+    return mergedBuffer;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SPEECH-TO-TEXT: ElevenLabs Transcription
+// ═══════════════════════════════════════════════════════════════════════════════
+
 async function submitAudioForTranscription(audioUrl: string): Promise<string> {
-    console.log('📤 Submitting audio URL to ElevenLabs for transcription:', audioUrl);
+    console.log('📤 Submitting to ElevenLabs:', audioUrl);
 
     const formData = new FormData();
     formData.append('model_id', 'scribe_v2');
@@ -26,18 +226,17 @@ async function submitAudioForTranscription(audioUrl: string): Promise<string> {
 
     if (!response.ok) {
         const errorText = await response.text();
-        console.error(`❌ ElevenLabs transcription submission failed (${response.status}):`, errorText);
-        throw new Error(`ElevenLabs API error: ${response.status} - ${errorText}`);
+        throw new Error(`ElevenLabs failed (${response.status}): ${errorText}`);
     }
 
     const result = await response.json();
-    console.log('✅ Transcription submitted successfully. ID:', result.transcription_id);
+    console.log('✅ Transcription ID:', result.transcription_id);
 
     return result.transcription_id;
 }
 
-async function getTranscriptionResult(transcriptionId: string, maxRetries: number = 30): Promise<any> {
-    console.log('🔄 Polling for transcription result:', transcriptionId);
+async function getTranscriptionResult(transcriptionId: string, maxRetries: number = 60): Promise<any> {
+    console.log('🔄 Polling for transcription...');
 
     for (let i = 0; i < maxRetries; i++) {
         const response = await fetch(
@@ -50,102 +249,127 @@ async function getTranscriptionResult(transcriptionId: string, maxRetries: numbe
         );
 
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`❌ Failed to get transcription result (${response.status}):`, errorText);
-            throw new Error(`Failed to retrieve transcription: ${response.status}`);
+            throw new Error(`Transcription poll failed: ${response.status}`);
         }
 
         const result = await response.json();
 
-        // Check if transcription is complete
         if (result.text && result.words) {
-            console.log('✅ Transcription completed successfully');
+            console.log(`✅ Transcription complete: ${result.words.length} words`);
             return result;
         }
 
-        // Wait before next poll (2 seconds)
-        console.log(`⏳ Waiting for transcription... Attempt ${i + 1}/${maxRetries}`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(`⏳ Attempt ${i + 1}/${maxRetries}...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
     }
 
-    throw new Error('Transcription timed out after maximum retries');
+    throw new Error('Transcription timeout');
 }
 
-// Convert word-level timestamps to smaller phrase chunks (3-7 words)
-// This creates more granular timing for smoother reveal animations
-function wordsToChunks(words: any[]): { timestamp: [number, number] }[] {
-    if (!words || words.length === 0) return [];
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADVANCED CHUNKING ALGORITHM
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    const chunks: { timestamp: [number, number] }[] = [];
-    let currentChunk: any[] = [];
+interface Word {
+    text: string;
+    start: number;
+    end: number;
+}
+
+interface Chunk {
+    timestamp: [number, number];
+    text: string;
+    wordCount: number;
+}
+
+function wordsToAdvancedChunks(words: Word[]): Chunk[] {
+    if (!words || words.length === 0) {
+        console.warn('⚠️ No words for chunking');
+        return [];
+    }
+
+    const totalWords = words.length;
+    const targetChunks = Math.min(Math.max(Math.floor(totalWords / 3), 15), 30);
+    const avgWordsPerChunk = Math.floor(totalWords / targetChunks);
+
+    console.log(`🎯 Chunking: ${totalWords} words → ${targetChunks} chunks`);
+
+    const chunks: Chunk[] = [];
+    let currentChunkWords: Word[] = [];
     let chunkStartTime = words[0].start;
 
-    // Common conjunctions and transition words that indicate natural phrase boundaries
-    const phraseBreakers = ['and', 'but', 'or', 'so', 'yet', 'for', 'nor', 'because',
-        'although', 'while', 'when', 'where', 'if', 'then'];
+    const sentenceEnders = ['.', '!', '?'];
+    const clauseBreakers = [',', ';', ':', '--'];
 
     for (let i = 0; i < words.length; i++) {
         const word = words[i];
-        currentChunk.push(word);
+        currentChunkWords.push(word);
 
-        // Check for natural phrase boundaries
-        const isPunctuation = word.text.match(/[.!?;,]$/); // Added comma and semicolon
-        const isConjunction = phraseBreakers.includes(word.text.toLowerCase().replace(/[.,!?;]$/, ''));
-        const isMaxLength = currentChunk.length >= 7; // Reduced from 10 to 7
-        const isMinLengthMet = currentChunk.length >= 3; // Ensure at least 3 words
+        const currentLength = currentChunkWords.length;
         const isLastWord = i === words.length - 1;
+        const nextWord = i < words.length - 1 ? words[i + 1] : null;
 
-        // Create chunk on:
-        // 1. Sentence endings (.!?)
-        // 2. Commas/semicolons (if min length met)
-        // 3. After conjunctions (if min length met)
-        // 4. Max 7 words
-        // 5. Last word
-        const shouldCreateChunk =
-            isPunctuation ||
-            (isConjunction && isMinLengthMet) ||
-            isMaxLength ||
-            isLastWord;
+        const hasSentenceEnder = sentenceEnders.some(e => word.text.endsWith(e));
+        const hasClauseBreaker = clauseBreakers.some(b => word.text.endsWith(b));
+        const timeTillNext = nextWord ? nextWord.start - word.end : 0;
+        const hasLongPause = timeTillNext > 0.5;
 
-        if (shouldCreateChunk) {
-            const chunkEndTime = word.end;
+        const isOptimal = currentLength >= avgWordsPerChunk - 1 && currentLength <= avgWordsPerChunk + 2;
+        const isMaxExceeded = currentLength >= avgWordsPerChunk * 1.5;
+
+        const shouldChunk = isLastWord || (
+            currentLength >= 2 && (
+                (hasSentenceEnder && (isOptimal || hasLongPause)) ||
+                (hasLongPause && isOptimal) ||
+                isMaxExceeded ||
+                (hasClauseBreaker && currentLength >= avgWordsPerChunk)
+            )
+        );
+
+        if (shouldChunk) {
             chunks.push({
-                timestamp: [chunkStartTime, chunkEndTime]
+                timestamp: [chunkStartTime, word.end],
+                text: currentChunkWords.map(w => w.text).join(' '),
+                wordCount: currentChunkWords.length
             });
 
-            // Start new chunk
-            currentChunk = [];
+            currentChunkWords = [];
             if (i < words.length - 1) {
                 chunkStartTime = words[i + 1].start;
             }
         }
     }
 
-    console.log(`📊 Created ${chunks.length} chunks from ${words.length} words (avg ${(words.length / chunks.length).toFixed(1)} words/chunk)`);
+    console.log(`✅ Created ${chunks.length} chunks`);
     return chunks;
 }
 
 async function generateCaptions(audioUrl: string): Promise<any> {
     try {
-        console.log('🎯 Starting caption generation for audio:', audioUrl);
+        console.log('🎯 Generating captions...');
 
-        // Step 1: Submit audio for transcription
         const transcriptionId = await submitAudioForTranscription(audioUrl);
-
-        // Step 2: Poll for transcription result
         const transcription = await getTranscriptionResult(transcriptionId);
+        const chunks = wordsToAdvancedChunks(transcription.words);
 
-        // Step 3: Convert words to chunks for reveal timing
-        const chunks = wordsToChunks(transcription.words);
-
-        // Step 4: Format captions data with chunks
         const captions = {
             text: transcription.text,
             language_code: transcription.language_code,
-            chunks: chunks  // This is what the frontend expects
+            chunks: chunks.map(c => ({
+                timestamp: c.timestamp,
+                text: c.text,
+                wordCount: c.wordCount
+            })),
+            metadata: {
+                totalWords: transcription.words.length,
+                totalChunks: chunks.length,
+                avgWordsPerChunk: (transcription.words.length / chunks.length).toFixed(1),
+                duration: transcription.words.length > 0 ?
+                    (transcription.words[transcription.words.length - 1].end - transcription.words[0].start).toFixed(2) : 0
+            }
         };
 
-        console.log(`✅ Captions generated: ${chunks.length} chunks from ${transcription.words.length} words`);
+        console.log(`✅ Captions: ${captions.chunks.length} chunks`);
         return captions;
 
     } catch (error: any) {
@@ -154,200 +378,235 @@ async function generateCaptions(audioUrl: string): Promise<any> {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN API ROUTE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export async function POST(req: NextRequest) {
     try {
-        const { chapter, courseId } = await req.json();
+        const { chapter, courseId, chapterIndex } = await req.json();
 
-        console.log('🎬 Starting video content generation for:', {
-            courseId,
-            chapterId: chapter.chapterId,
-            chapterTitle: chapter.chapterTitle
-        });
+        console.log('\n' + '═'.repeat(80));
+        console.log('🎬 VIDEO CONTENT GENERATION');
+        console.log('═'.repeat(80));
+        console.log('Course:', courseId);
+        console.log('Chapter:', chapter.chapterTitle);
+        console.log('Index:', chapterIndex);
+        console.log('═'.repeat(80) + '\n');
 
-        // Check if slides already exist for this chapter
+        // ═══════════════════════════════════════════════════════════════════
+        // Testing Mode Check
+        // ═══════════════════════════════════════════════════════════════════
+        if (TESTING_MODE && chapterIndex !== TEST_CHAPTER_INDEX) {
+            console.log(`⏭️ Skipping chapter ${chapterIndex} (testing mode)`);
+            return NextResponse.json({
+                success: true,
+                skipped: true,
+                reason: `Testing mode: only processing chapter ${TEST_CHAPTER_INDEX}`
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Check Existing Slides
+        // ═══════════════════════════════════════════════════════════════════
         const existingSlides = await db
             .select()
             .from(chapterContentSlides)
             .where(eq(chapterContentSlides.chapterId, chapter.chapterId));
 
         if (existingSlides.length > 0) {
-            console.log(`✅ Slides already exist for chapter ${chapter.chapterId}. Skipping generation.`);
-            console.log(`📊 Found ${existingSlides.length} existing slides`);
-
+            console.log(`✅ Slides already exist (${existingSlides.length})`);
             return NextResponse.json({
                 success: true,
                 data: existingSlides,
                 skipped: true,
-                message: 'Slides already exist for this chapter',
-                metadata: {
-                    generatedAt: existingSlides[0].createdAt,
-                    courseId,
-                    chapterId: chapter.chapterId,
-                    totalSlides: existingSlides.length
-                }
+                message: 'Slides already exist for this chapter'
             });
         }
 
-        // Generate video slides using Groq AI (using most capable model for detailed content)
-        const result = await groq.json(
-            GENERATE_VIDEO_PROMPT,
-            JSON.stringify(chapter),
-            {
-                model: 'llama-3.3-70b-versatile',  // Most capable Groq model
-                temperature: 0.8,  // Slightly higher for more creative, detailed content
-                max_tokens: 12000  // Much higher for detailed paragraphs and long narration
+        // ═══════════════════════════════════════════════════════════════════
+        // Test Gemini Connection
+        // ═══════════════════════════════════════════════════════════════════
+        console.log('🔗 Testing Gemini API...');
+        try {
+            await gemini.test();
+            console.log('✅ Gemini connected');
+        } catch (error: any) {
+            console.error('❌ Gemini connection failed:', error.message);
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'Gemini API connection failed',
+                    details: error.message
+                },
+                { status: 500 }
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Generate Slides with Gemini
+        // ═══════════════════════════════════════════════════════════════════
+        console.log('🤖 Generating slides with Gemini...');
+
+        let slidesData;
+        try {
+            const result = await gemini.json(
+                GENERATE_VIDEO_PROMPT,
+                JSON.stringify(chapter),
+                {
+                    model: 'gemini-2.5-flash',
+                    temperature: 0.7,
+                    maxOutputTokens: 65536
+                }
+            );
+
+            console.log('✅ Gemini response received');
+
+            // Handle response format
+            if (Array.isArray(result)) {
+                slidesData = result;
+            } else if (result?.slides && Array.isArray(result.slides)) {
+                slidesData = result.slides;
+            } else if (result?.data && Array.isArray(result.data)) {
+                slidesData = result.data;
+            } else if (typeof result === 'object') {
+                slidesData = [result];
+            } else {
+                throw new Error('Invalid response format from Gemini');
             }
-        );
 
-        console.log('✅ Groq API Response Received:', {
-            resultType: typeof result,
-            isArray: Array.isArray(result),
-            length: Array.isArray(result) ? result.length : 'N/A'
-        });
+            console.log(`📊 Processing ${slidesData.length} slides`);
 
-        // Handle case where AI returns single object instead of array
-        let VideoContentJson;
-        if (!Array.isArray(result)) {
-            console.log('⚠️ AI returned single object instead of array. Wrapping in array...');
-            VideoContentJson = [result];
-        } else {
-            VideoContentJson = result;
+        } catch (error: any) {
+            console.error('❌ Gemini generation failed:', error.message);
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'Failed to generate slides',
+                    details: error.message
+                },
+                { status: 500 }
+            );
         }
 
-        if (VideoContentJson.length > 0) {
-            console.log('📊 First slide preview:', JSON.stringify(VideoContentJson[0], null, 2));
+        if (!slidesData || slidesData.length === 0) {
+            throw new Error('No slides generated');
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // Process Each Slide
+        // ═══════════════════════════════════════════════════════════════════
         const insertedSlides = [];
 
-        // Process each slide: generate audio, upload to Vercel Blob, and save to database
-        for (let i = 0; i < VideoContentJson.length; i++) {
-            const slide = VideoContentJson[i];
+        for (let i = 0; i < slidesData.length; i++) {
+            const slide = slidesData[i];
+
+            console.log(`\n${'─'.repeat(80)}`);
+            console.log(`🎬 Slide ${i + 1}/${slidesData.length}: ${slide.slideId || `slide-${i}`}`);
+            console.log(`${'─'.repeat(80)}`);
+
+            // Validate slide
+            if (!slide.narration?.fullText) {
+                console.warn(`⚠️ Missing narration, skipping...`);
+                continue;
+            }
+
             const narration = slide.narration.fullText;
+            const wordCount = narration.split(/\s+/).length;
+            const estimatedMinutes = Math.ceil(wordCount / 180);
 
-            console.log(`🎤 Generating audio for slide ${i + 1}/${VideoContentJson.length}: ${slide.slideId}`);
-            console.log(`📝 Narration text (${narration.length} chars):`, narration.substring(0, 100) + '...');
-            // try {
-            //     // Generate audio using ElevenLabs TTS API
-            //     const voiceId = "JBFqnCBsd6RMkjVDRZzb"; // You can change this to use different voices
-            //     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`, {
-            //         method: "POST",
-            //         headers: {
-            //             "xi-api-key": process.env.ELEVENLABS_API_KEY!,
-            //             "Content-Type": "application/json"
-            //         },
-            //         body: JSON.stringify({
-            //             text: narration,
-            //             model_id: "eleven_multilingual_v2",
-            //             voice_settings: {
-            //                 stability: 0.5,
-            //                 similarity_boost: 0.75,
-            //                 style: 0,
-            //                 use_speaker_boost: true
-            //             }
-            //         })
-            //     });
-
-            //     if (!response.ok) {
-            //         const errorText = await response.text();
-            //         console.error(`❌ ElevenLabs TTS API Error (${response.status}):`, errorText);
-            //         throw new Error(`ElevenLabs TTS failed: ${response.status} - ${errorText}`);
-            //     }
-
-            //     console.log('✅ ElevenLabs TTS Response received');
+            console.log(`📝 Narration: ${narration.length} chars, ${wordCount} words (~${estimatedMinutes} min)`);
 
             try {
-                // Generate audio using Groq Orpheus TTS API
-                const response = await fetch("https://api.groq.com/openai/v1/audio/speech", {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        model: "canopylabs/orpheus-v1-english",
-                        voice: "troy",
-                        input: narration,
-                        response_format: "wav"
-                    })
-                });
+                // ═══════════════════════════════════════════════════════════
+                // Step 1: Generate Audio (with chunking)
+                // ═══════════════════════════════════════════════════════════
+                console.log('🔊 Step 1: Generating audio...');
+                const audioBuffer = await generateAudioForLongText(narration);
+                console.log(`✅ Audio generated: ${audioBuffer.length} bytes`);
 
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.error(`❌ Groq TTS API Error (${response.status}):`, errorText);
-                    throw new Error(`Groq TTS failed: ${response.status} - ${errorText}`);
-                }
-
-                console.log('✅ Groq TTS Response received');
-
-                // Get audio buffer from response
-                const arrayBuffer = await response.arrayBuffer();
-                const audioBuffer = Buffer.from(arrayBuffer);
-                console.log(`📦 Audio buffer size: ${audioBuffer.length} bytes`);
-
-                // Validate audio buffer size
-                if (audioBuffer.length < 1000) {
-                    console.error('⚠️ Suspiciously small audio buffer!');
-                    throw new Error(`Audio buffer too small (${audioBuffer.length} bytes). Expected larger WAV file.`);
-                }
-
-                // Upload audio to Vercel Blob
-                const filename = `audio/${courseId}/${chapter.chapterId}/${slide.slideId}.wav`;
+                // ═══════════════════════════════════════════════════════════
+                // Step 2: Upload to Vercel Blob
+                // ═══════════════════════════════════════════════════════════
+                console.log('☁️ Step 2: Uploading to Vercel Blob...');
+                const filename = `audio/${courseId}/${chapter.chapterId}/${slide.slideId || `slide-${i}`}.wav`;
                 const { url } = await put(filename, audioBuffer, {
                     access: 'public',
                     contentType: 'audio/wav',
                     allowOverwrite: true
                 });
+                console.log(`✅ Uploaded: ${url}`);
 
-                console.log(`✅ Audio uploaded to Vercel Blob: ${url}`);
-
-                // Generate captions from audio using ElevenLabs (with chunks)
-                console.log('🎬 Generating captions from audio...');
+                // ═══════════════════════════════════════════════════════════
+                // Step 3: Generate Captions
+                // ═══════════════════════════════════════════════════════════
+                console.log('🎬 Step 3: Generating captions...');
                 const captions = await generateCaptions(url);
+                console.log(`✅ Captions: ${captions.chunks.length} chunks`);
 
-                // Insert slide data into database with captions
+                // ═══════════════════════════════════════════════════════════
+                // Step 4: Save to Database
+                // ═══════════════════════════════════════════════════════════
+                console.log('💾 Step 4: Saving to database...');
                 const [insertedSlide] = await db.insert(chapterContentSlides).values({
                     courseId: courseId,
                     chapterId: chapter.chapterId,
-                    slideId: slide.slideId,
-                    slideIndex: slide.slideIndex,
+                    slideId: slide.slideId || `slide-${i}`,
+                    slideIndex: slide.slideIndex || i,
                     audioUrl: url,
                     narration: slide.narration,
-                    captions: captions,  // Now contains chunks instead of words
+                    captions: captions,
                     html: slide.html,
-                    revealData: slide.revealData
+                    revealData: slide.revealData || []
                 }).returning();
 
                 insertedSlides.push(insertedSlide);
-                console.log(`💾 Slide ${slide.slideId} saved to database with audio URL and captions`);
+                console.log(`✅ Slide ${i + 1} saved!`);
 
             } catch (error: any) {
-                console.error(`❌ Error processing slide ${slide.slideId}:`, error.message);
-                throw new Error(`Failed to process slide ${slide.slideId}: ${error.message}`);
+                console.error(`❌ Error processing slide ${i + 1}:`, error.message);
+                console.error('Stack:', error.stack);
+
+                // Continue with next slide instead of failing entire batch
+                console.log('⏭️ Continuing to next slide...');
+                continue;
             }
         }
 
-        console.log('🎉 Video content generation completed successfully!');
+        // ═══════════════════════════════════════════════════════════════════
+        // Summary
+        // ═══════════════════════════════════════════════════════════════════
+        console.log('\n' + '═'.repeat(80));
+        console.log(`🎉 SUCCESS: Generated ${insertedSlides.length}/${slidesData.length} slides`);
+        console.log('═'.repeat(80) + '\n');
 
         return NextResponse.json({
             success: true,
             data: insertedSlides,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                model: 'openai/gpt-oss-120b',
+                model: 'gemini-2.5-flash',
                 courseId,
                 chapterId: chapter.chapterId,
-                totalSlides: insertedSlides.length
+                totalSlides: insertedSlides.length,
+                requestedSlides: slidesData.length,
+                testingMode: TESTING_MODE
             }
         });
 
     } catch (error: any) {
-        console.error('🔥 Video content generation failed:', error);
+        console.error('\n' + '═'.repeat(80));
+        console.error('🔥 VIDEO CONTENT GENERATION FAILED');
+        console.error('═'.repeat(80));
+        console.error('Error:', error.message);
+        console.error('Stack:', error.stack);
+        console.error('═'.repeat(80) + '\n');
+
         return NextResponse.json(
             {
                 success: false,
                 error: error.message || 'Failed to generate video content',
-                details: error.stack
+                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
             },
             { status: 500 }
         );
