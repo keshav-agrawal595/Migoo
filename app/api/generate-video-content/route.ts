@@ -1074,7 +1074,7 @@ export async function POST(req: NextRequest) {
                     GENERATE_VIDEO_PROMPT,
                     JSON.stringify(chapter),
                     {
-                        model: 'openrouter/pony-alpha',
+                        model: 'openrouter/aurora-alpha',
                         temperature: 0.7,
                         maxTokens: 32000,
                         reasoning: true
@@ -1234,7 +1234,7 @@ export async function POST(req: NextRequest) {
             data: insertedSlides,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                model: 'openrouter/pony-alpha',
+                model: 'openrouter/aurora-alpha',
                 courseId,
                 chapterId: chapter.chapterId,
                 totalSlides: insertedSlides.length,

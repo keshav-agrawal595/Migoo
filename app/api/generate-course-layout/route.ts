@@ -323,7 +323,7 @@ export async function POST(req: NextRequest) {
             COURSE_CONFIG_PROMPT,
             userInput,
             {
-                model: 'openrouter/pony-alpha',
+                model: 'openrouter/aurora-alpha',
                 temperature: 0.7,
                 maxTokens: 8000,
                 reasoning: true
@@ -410,7 +410,7 @@ export async function POST(req: NextRequest) {
             data: courseResult[0],
             metadata: {
                 generatedAt: new Date().toISOString(),
-                model: 'openrouter/pony-alpha',
+                model: 'openrouter/aurora-alpha',
                 courseId,
                 type,
                 courseName: result.courseName,

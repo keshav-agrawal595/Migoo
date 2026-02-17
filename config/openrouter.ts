@@ -21,7 +21,7 @@ interface OpenRouterResponse {
 class OpenRouterClient {
     private apiKey: string;
     private baseUrl: string = 'https://openrouter.ai/api/v1';
-    private model: string = 'openrouter/pony-alpha';
+    private model: string = 'openrouter/aurora-alpha';
 
     constructor() {
         this.apiKey = process.env.OPENROUTER_API_KEY || '';
