@@ -1,5 +1,5 @@
 import { db } from "@/config/db";
-import { groq } from "@/config/groq";
+import { openrouter } from "@/config/openrouter";
 import { coursesTable } from "@/config/schema";
 import { COURSE_CONFIG_PROMPT } from "@/data/Prompt";
 import { currentUser } from "@clerk/nextjs/server";
@@ -65,17 +65,17 @@ export async function POST(req: NextRequest) {
         // ═══════════════════════════════════════════════════════════════════
         // Test API connection
         // ═══════════════════════════════════════════════════════════════════
-        console.log('🔗 Testing Groq API connection...');
+        console.log('🔗 Testing OpenRouter API connection...');
         try {
-            await groq.test();
-            console.log('✅ Groq API connection successful');
+            await openrouter.test();
+            console.log('✅ OpenRouter API connection successful');
         } catch (error: any) {
-            console.error('❌ Groq API Connection Test Failed:', error.message);
+            console.error('❌ OpenRouter API Connection Test Failed:', error.message);
             return NextResponse.json(
                 {
-                    error: 'Groq API connection failed',
+                    error: 'OpenRouter API connection failed',
                     details: error.message,
-                    suggestion: 'Check your NEXT_PUBLIC_GROQ_API_KEY in .env.local'
+                    suggestion: 'Check your OPENROUTER_API_KEY in .env.local'
                 },
                 { status: 500 }
             );
@@ -84,22 +84,22 @@ export async function POST(req: NextRequest) {
         // ═══════════════════════════════════════════════════════════════════
         // Generate comprehensive course layout
         // ═══════════════════════════════════════════════════════════════════
-        console.log('🤖 Generating comprehensive course layout with Groq AI...');
-        console.log('Model: openai/gpt-oss-120b');
+        console.log('🤖 Generating comprehensive course layout with OpenRouter AI...');
+        console.log('Model: z-ai/glm-4.5-air:free');
         console.log('Temperature: 0.7 (balanced creativity)');
         console.log('Max Tokens: 8000 (increased for detailed courses)');
 
-        const result = await groq.json(
+        const result = await openrouter.json(
             COURSE_CONFIG_PROMPT,
             userInput,
             {
-                model: 'openai/gpt-oss-120b',
+                model: 'z-ai/glm-4.5-air:free',
                 temperature: 0.7,
-                max_tokens: 8000  // Increased for longer, more detailed courses
+                maxTokens: 8000,
             }
         );
 
-        console.log('✅ Groq API Response Received');
+        console.log('✅ OpenRouter API Response Received');
         console.log('📊 Course Layout Statistics:', {
             courseName: result.courseName,
             courseId: result.courseId,
@@ -162,6 +162,19 @@ export async function POST(req: NextRequest) {
         console.log('✅ Course saved to database successfully');
         console.log('Database ID:', courseResult[0].id);
 
+        // Fire thumbnail generation in background (non-blocking)
+        console.log('🖼️  Triggering thumbnail generation in background...');
+        const baseUrl = req.nextUrl.origin;
+        fetch(`${baseUrl}/api/generate-thumbnail`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ courseId, courseName: result.courseName })
+        }).then(() => {
+            console.log('✅ Thumbnail generation request sent successfully');
+        }).catch(err => {
+            console.error('⚠️ Thumbnail generation request failed:', err.message);
+        });
+
         // ═══════════════════════════════════════════════════════════════════
         // Return success response
         // ═══════════════════════════════════════════════════════════════════
@@ -179,7 +192,7 @@ export async function POST(req: NextRequest) {
             data: courseResult[0],
             metadata: {
                 generatedAt: new Date().toISOString(),
-                model: 'openai/gpt-oss-120b',
+                model: 'z-ai/glm-4.5-air:free',
                 courseId,
                 type,
                 courseName: result.courseName,

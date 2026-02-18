@@ -75,6 +75,46 @@ function CoursePage() {
             return;
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // Step 1: Generate DeAPI Images (before video content)
+        // ═══════════════════════════════════════════════════════════════════
+        console.log("\n🖼️  Step 1: Generating DeAPI images for all chapters...");
+        const imageToast = toast.loading("Generating AI images for course slides...", { duration: Infinity });
+
+        try {
+            const imageRes = await axios.post(`/api/generate-images`, {
+                courseName: course.courseName,
+                courseId: course.courseId,
+                chapters: course.courseLayout.chapters
+            });
+
+            if (imageRes.data.skipped) {
+                console.log("✅ Images already exist, skipping generation");
+                toast.info("Images already generated for this course", {
+                    id: imageToast,
+                    duration: 3000
+                });
+            } else {
+                console.log(`✅ Generated ${imageRes.data.data?.length} images`);
+                toast.success(
+                    `✅ Generated ${imageRes.data.data?.length} AI images for course slides!`,
+                    { id: imageToast, duration: 4000 }
+                );
+            }
+        } catch (imageError: any) {
+            console.error("❌ Image generation failed:", imageError.message);
+            toast.error(
+                `Image generation failed: ${imageError.response?.data?.error || imageError.message}. Continuing with video content...`,
+                { id: imageToast, duration: 6000 }
+            );
+            // Don't return — continue with video content even if images fail
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Step 2: Generate Video Content for each chapter
+        // ═══════════════════════════════════════════════════════════════════
+        console.log("\n🎬 Step 2: Generating video content for each chapter...");
+
         let successCount = 0;
         let skippedCount = 0;
         let errorCount = 0;

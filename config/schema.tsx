@@ -1,4 +1,4 @@
-import { integer, json, jsonb, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { integer, json, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const usersTable = pgTable("users", {
     id: integer().primaryKey().generatedAlwaysAsIdentity(),
@@ -16,6 +16,18 @@ export const coursesTable = pgTable("courses", {
     type: varchar({ length: 255 }).notNull(),
     courseLayout: json().notNull(),
     createdAt: timestamp("created_at").defaultNow(),
+    courseThumbnail: varchar({ length: 1000 }),
+})
+
+export const courseImages = pgTable("course_images", {
+    id: integer().primaryKey().generatedAlwaysAsIdentity(),
+    courseId: varchar({ length: 255 }).notNull().references(() => coursesTable.courseId),
+    imageIndex: integer().notNull(),
+    imagePrompt: varchar({ length: 500 }).notNull(),
+    imageUrl: varchar({ length: 1000 }).notNull(),
+    width: integer().default(1024),
+    height: integer().default(576),
+    createdAt: timestamp("created_at").defaultNow(),
 })
 
 export const chapterContentSlides = pgTable("chapter_content_slides", {
@@ -25,6 +37,7 @@ export const chapterContentSlides = pgTable("chapter_content_slides", {
     slideId: varchar({ length: 255 }).notNull().unique(),
     slideIndex: integer().notNull(),
     audioUrl: varchar({ length: 500 }),
+    imageUrl: varchar({ length: 500 }),
     narration: json().notNull(),
     captions: json(),
     html: text(),

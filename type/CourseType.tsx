@@ -6,6 +6,7 @@ export type Course = {
     id: number;
     courseLayout: courseLayout;
     chapterContentSlides: ChapterContentSlide[];
+    courseThumbnail?: string;
 }
 
 export type courseLayout = {

@@ -1,20 +1,11 @@
-// config/groq.ts
-interface GroqChatMessage {
-    role: 'system' | 'user' | 'assistant' | 'developer';
-    content: string;
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENHANCED GROQ API CLIENT
+// Optimized for large prompts, perfect JSON parsing, fast response times
+// ═══════════════════════════════════════════════════════════════════════════════
 
-interface GroqChatCompletionParams {
-    model: string;
-    messages: GroqChatMessage[];
-    temperature?: number;
-    max_tokens?: number;
-    top_p?: number;
-    stream?: boolean;
-    stop?: string | string[];
-    response_format?: {
-        type: 'text' | 'json_object';
-    };
+interface GroqChatMessage {
+    role: 'system' | 'user' | 'assistant';
+    content: string;
 }
 
 interface GroqChatCompletionResponse {
@@ -37,59 +28,74 @@ interface GroqChatCompletionResponse {
     };
 }
 
+interface JSONParseStrategy {
+    name: string;
+    parser: (text: string) => any;
+}
+
 /**
- * Groq API Client - No SDK required
+ * Enhanced Groq Client for Video Course Generation
  */
-class GroqClient {
+class EnhancedGroqClient {
     private apiKey: string;
     private baseURL: string = 'https://api.groq.com/openai/v1';
 
+    // Best models for different tasks
+    private models = {
+        // Fast, high-quality model for large content generation
+        primary: 'llama-3.3-70b-versatile',
+        // Fallback if primary fails
+        fallback: 'llama-3.1-70b-versatile',
+        // For testing
+        test: 'llama-3.3-70b-versatile'
+    };
+
     constructor() {
-        this.apiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY || '';
+        this.apiKey = process.env.GROQ_API_KEY || '';
 
         if (!this.apiKey) {
-            console.error('❌ ERROR: NEXT_PUBLIC_GROQ_API_KEY is not set in environment variables');
-            throw new Error('Groq API key is required. Set NEXT_PUBLIC_GROQ_API_KEY environment variable.');
+            throw new Error('NEXT_PUBLIC_GROQ_API_KEY is required');
         }
     }
 
     /**
-     * Create a chat completion with Groq API
+     * Generate slides with bulletproof JSON parsing
      */
-    async createChatCompletion(
-        messages: GroqChatMessage[],
-        options: {
+    async generateSlides(
+        systemPrompt: string,
+        userInput: string,
+        options?: {
             model?: string;
             temperature?: number;
-            max_tokens?: number;
-            response_format?: 'text' | 'json_object';
-        } = {}
-    ): Promise<GroqChatCompletionResponse> {
-        const {
-            model = 'openai/gpt-oss-120b', // Default to GPT OSS 120B
-            temperature = 0.7,
-            max_tokens = 2048,
-            response_format = 'text'
-        } = options;
+            maxTokens?: number;
+        }
+    ): Promise<any> {
+        const model = options?.model || this.models.primary;
+        const temperature = options?.temperature ?? 0.7;
+        const maxTokens = options?.maxTokens ?? 8000;
 
-        const params: GroqChatCompletionParams = {
-            model,
-            messages,
-            temperature,
-            max_tokens,
-            response_format: response_format === 'json_object' ? { type: 'json_object' } : undefined,
-        };
+        console.log('\n' + '═'.repeat(80));
+        console.log('🤖 GROQ API REQUEST');
+        console.log('═'.repeat(80));
+        console.log('Model:', model);
+        console.log('Temperature:', temperature);
+        console.log('Max Tokens:', maxTokens);
+        console.log('System Prompt:', systemPrompt.length, 'chars');
+        console.log('User Input:', userInput.length, 'chars');
+        console.log('═'.repeat(80));
 
-        console.log('🚀 Calling Groq API with:', {
-            model: params.model,
-            temperature: params.temperature,
-            max_tokens: params.max_tokens,
-            response_format: params.response_format,
-            messageCount: messages.length
-        });
+        const messages: GroqChatMessage[] = [
+            {
+                role: 'system',
+                content: systemPrompt
+            },
+            {
+                role: 'user',
+                content: userInput
+            }
+        ];
 
         try {
-            console.log('📤 Sending request to Groq API...');
             const startTime = Date.now();
 
             const response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -98,217 +104,361 @@ class GroqClient {
                     'Authorization': `Bearer ${this.apiKey}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(params),
+                body: JSON.stringify({
+                    model: model,
+                    messages: messages,
+                    temperature: temperature,
+                    max_tokens: maxTokens,
+                    top_p: 1,
+                    stream: false
+                }),
+                signal: AbortSignal.timeout(180000) // 3 minute timeout
             });
 
             const endTime = Date.now();
-            const responseTime = endTime - startTime;
-
-            console.log(`⏱️  Response time: ${responseTime}ms`);
+            const responseTime = ((endTime - startTime) / 1000).toFixed(2);
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error('❌ Groq API Error Response:', {
-                    status: response.status,
-                    statusText: response.statusText,
-                    error: errorText
-                });
-
-                // Try to parse error JSON
-                try {
-                    const errorData = JSON.parse(errorText);
-                    throw new Error(`Groq API Error ${response.status}: ${errorData.error?.message || response.statusText}`);
-                } catch {
-                    throw new Error(`Groq API Error ${response.status}: ${response.statusText}`);
-                }
+                console.error('❌ Groq API Error:', errorText);
+                throw new Error(`Groq API failed (${response.status}): ${errorText}`);
             }
 
-            const data = await response.json();
+            const data: GroqChatCompletionResponse = await response.json();
 
-            console.log('✅ Groq API Success:', {
-                model: data.model,
-                id: data.id,
-                finish_reason: data.choices[0]?.finish_reason,
-                tokens: {
-                    prompt: data.usage?.prompt_tokens,
-                    completion: data.usage?.completion_tokens,
-                    total: data.usage?.total_tokens
-                }
+            console.log('✅ Response received in', responseTime, 'seconds');
+            console.log('📊 Tokens:', {
+                prompt: data.usage.prompt_tokens,
+                completion: data.usage.completion_tokens,
+                total: data.usage.total_tokens
             });
 
-            console.log('📝 Raw response content:', data.choices[0]?.message?.content);
+            if (!data.choices?.[0]?.message?.content) {
+                throw new Error('No content in Groq response');
+            }
 
-            return data as GroqChatCompletionResponse;
+            const rawContent = data.choices[0].message.content;
+            console.log('📝 Raw response length:', rawContent.length, 'chars');
+            console.log('📝 Response preview:', rawContent.substring(0, 200).replace(/\n/g, ' ') + '...');
+
+            // Parse JSON with advanced strategies
+            const parsed = await this.advancedJSONParse(rawContent);
+
+            console.log('✅ JSON parsed successfully');
+            console.log('═'.repeat(80) + '\n');
+
+            return parsed;
+
         } catch (error: any) {
-            console.error('🔥 Groq API Request Failed:', {
-                error: error.message,
-                stack: error.stack
-            });
+            console.error('❌ Groq API Error:', error.message);
             throw error;
         }
     }
 
     /**
-     * Simple chat with system and user messages
+     * Advanced JSON parsing with 8 fallback strategies
      */
-    async simpleChat(
-        systemPrompt: string,
-        userMessage: string,
-        options?: {
-            model?: string;
-            temperature?: number;
-            max_tokens?: number;
-            response_format?: 'text' | 'json_object';
-        }
-    ): Promise<string> {
-        const messages: GroqChatMessage[] = [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userMessage }
+    private async advancedJSONParse(text: string): Promise<any> {
+        console.log('🔧 Advanced JSON parsing...');
+
+        let cleaned = text.trim();
+
+        // Remove markdown code blocks
+        cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
+        cleaned = cleaned.replace(/```\s*$/i, '');
+        cleaned = cleaned.trim();
+
+        // Define parsing strategies
+        const strategies: JSONParseStrategy[] = [
+            {
+                name: 'Direct Parse',
+                parser: (t: string) => JSON.parse(t)
+            },
+            {
+                name: 'Extract Boundaries',
+                parser: (t: string) => this.extractJSONBoundaries(t)
+            },
+            {
+                name: 'Fix HTML Quotes',
+                parser: (t: string) => this.fixHTMLQuotes(t)
+            },
+            {
+                name: 'Fix Trailing Commas',
+                parser: (t: string) => this.fixTrailingCommas(t)
+            },
+            {
+                name: 'Fix Escaping',
+                parser: (t: string) => this.fixEscaping(t)
+            },
+            {
+                name: 'Aggressive Cleanup',
+                parser: (t: string) => this.aggressiveCleanup(t)
+            },
+            {
+                name: 'Balance Brackets',
+                parser: (t: string) => this.balanceBrackets(t)
+            },
+            {
+                name: 'Manual Extraction',
+                parser: (t: string) => this.manualExtraction(t)
+            }
         ];
 
-        console.log('💬 Simple chat request:', {
-            systemPromptLength: systemPrompt.length,
-            userMessageLength: userMessage.length,
-            options
-        });
+        // Try each strategy
+        for (let i = 0; i < strategies.length; i++) {
+            const strategy = strategies[i];
 
-        const response = await this.createChatCompletion(messages, options);
-        return response.choices[0]?.message?.content || '';
+            try {
+                console.log(`📝 Strategy ${i + 1}/${strategies.length}: ${strategy.name}`);
+                const result = strategy.parser(cleaned);
+
+                if (this.isValidParsedJSON(result)) {
+                    console.log(`✅ Success with ${strategy.name}`);
+                    return result;
+                } else {
+                    console.warn(`⚠️ ${strategy.name} produced invalid structure`);
+                }
+
+            } catch (error: any) {
+                console.warn(`⚠️ ${strategy.name} failed: ${error.message.substring(0, 80)}`);
+
+                if (i === strategies.length - 1) {
+                    console.error('❌ All strategies failed');
+                    console.error('First 500 chars:', cleaned.substring(0, 500));
+                    console.error('Last 200 chars:', cleaned.substring(Math.max(0, cleaned.length - 200)));
+                    throw new Error(`All ${strategies.length} parsing strategies failed`);
+                }
+            }
+        }
+
+        throw new Error('JSON parsing failed');
     }
 
     /**
-     * Create a chat completion that returns JSON object
+     * Strategy 1: Extract JSON boundaries
      */
-    async createJSONChat<T = any>(
-        systemPrompt: string,
-        userMessage: string,
-        options?: {
-            model?: string;
-            temperature?: number;
-            max_tokens?: number;
+    private extractJSONBoundaries(text: string): any {
+        const arrayStart = text.indexOf('[');
+        const objectStart = text.indexOf('{');
+
+        let startIdx = -1;
+        if (arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart)) {
+            startIdx = arrayStart;
+        } else if (objectStart !== -1) {
+            startIdx = objectStart;
         }
-    ): Promise<T> {
-        console.log('📊 JSON chat request:', {
-            systemPromptLength: systemPrompt.length,
-            userMessageLength: userMessage.length
-        });
 
-        const response = await this.simpleChat(systemPrompt, userMessage, {
-            ...options,
-            response_format: 'json_object'
-        });
-
-        console.log('📦 Raw JSON response:', response);
-
-        try {
-            const parsed = JSON.parse(response);
-            console.log('✅ JSON parsed successfully:', {
-                type: typeof parsed,
-                keys: Object.keys(parsed)
-            });
-            return parsed as T;
-        } catch (error: any) {
-            console.error('❌ Failed to parse JSON response:', {
-                error: error.message,
-                response: response.substring(0, 200) + '...'
-            });
-            throw new Error(`Invalid JSON response from Groq API: ${error.message}`);
+        if (startIdx === -1) {
+            throw new Error('No JSON start found');
         }
+
+        const extracted = text.substring(startIdx);
+        return JSON.parse(extracted);
     }
 
     /**
-     * Validate API key by making a simple request
+     * Strategy 2: Fix HTML quotes
      */
-    async validateAPIKey(): Promise<boolean> {
-        console.log('🔑 Validating Groq API key...');
+    private fixHTMLQuotes(text: string): any {
+        let fixed = text;
+
+        // Fix "html": "..." fields
+        const htmlFieldRegex = /"html":\s*"((?:[^"\\]|\\.)*)"/g;
+
+        fixed = fixed.replace(htmlFieldRegex, (match, htmlContent) => {
+            let fixedHtml = htmlContent;
+            // Convert double quotes in attributes to single quotes
+            fixedHtml = fixedHtml.replace(/\s+([\w-]+)="([^"]*)"/g, ' $1=\'$2\'');
+            return `"html": "${fixedHtml}"`;
+        });
+
+        return JSON.parse(fixed);
+    }
+
+    /**
+     * Strategy 3: Fix trailing commas
+     */
+    private fixTrailingCommas(text: string): any {
+        let fixed = text
+            .replace(/,(\s*[\]}])/g, '$1')
+            .replace(/,(\s*$)/g, '');
+
+        return JSON.parse(fixed);
+    }
+
+    /**
+     * Strategy 4: Fix escaping
+     */
+    private fixEscaping(text: string): any {
+        let fixed = text
+            .replace(/([^\\])\n/g, '$1\\n')
+            .replace(/\t/g, '\\t');
+
+        return JSON.parse(fixed);
+    }
+
+    /**
+     * Strategy 5: Aggressive cleanup
+     */
+    private aggressiveCleanup(text: string): any {
+        let fixed = text
+            .split('\n')
+            .map(line => line.trim())
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .replace(/,(\s*[\]}])/g, '$1')
+            .replace(/\/\/.*$/gm, '')
+            .replace(/\/\*[\s\S]*?\*\//g, '');
+
+        return JSON.parse(fixed);
+    }
+
+    /**
+     * Strategy 6: Balance brackets
+     */
+    private balanceBrackets(text: string): any {
+        let fixed = text.trim();
+
+        const openBraces = (fixed.match(/\{/g) || []).length;
+        const closeBraces = (fixed.match(/\}/g) || []).length;
+        const openBrackets = (fixed.match(/\[/g) || []).length;
+        const closeBrackets = (fixed.match(/\]/g) || []).length;
+
+        for (let i = 0; i < (openBrackets - closeBrackets); i++) fixed += ']';
+        for (let i = 0; i < (openBraces - closeBraces); i++) fixed += '}';
+
+        console.log(`   Balanced: +${openBrackets - closeBrackets} ], +${openBraces - closeBraces} }`);
+
+        return JSON.parse(fixed);
+    }
+
+    /**
+     * Strategy 7: Manual extraction
+     */
+    private manualExtraction(text: string): any {
+        console.log('🆘 Manual extraction...');
+
+        const slides: any[] = [];
+        const slidePattern = /\{[^{}]*"slideId"[^{}]*"slideIndex"[^{}]*"html"[^{}]*"narration"[^{}]*"revealData"[^{}]*\}/g;
+
+        const matches = text.match(slidePattern);
+
+        if (!matches || matches.length === 0) {
+            throw new Error('Manual extraction found no slides');
+        }
+
+        for (const match of matches) {
+            try {
+                const slide = JSON.parse(match);
+                slides.push(slide);
+            } catch (e) {
+                console.warn('   Failed to parse extracted slide');
+            }
+        }
+
+        if (slides.length === 0) {
+            throw new Error('Manual extraction parsed no valid slides');
+        }
+
+        console.log(`   Extracted ${slides.length} slides`);
+        return slides;
+    }
+
+    /**
+     * Validate parsed JSON
+     */
+    private isValidParsedJSON(result: any): boolean {
+        if (!result) return false;
+
+        const slides = Array.isArray(result) ? result : [result];
+
+        if (slides.length === 0) return false;
+
+        const firstSlide = slides[0];
+
+        return Boolean(
+            firstSlide.slideId &&
+            firstSlide.slideIndex !== undefined &&
+            firstSlide.html &&
+            firstSlide.narration?.fullText &&
+            Array.isArray(firstSlide.revealData)
+        );
+    }
+
+    /**
+     * Test API connection
+     */
+    async test(): Promise<void> {
+        console.log('🔗 Testing Groq API...');
 
         try {
-            const response = await fetch(`${this.baseURL}/models`, {
+            const response = await fetch(`${this.baseURL}/chat/completions`, {
+                method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
                 },
+                body: JSON.stringify({
+                    model: this.models.test,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: 'Reply with: {"status": "OK"}'
+                        }
+                    ],
+                    max_tokens: 50
+                }),
+                signal: AbortSignal.timeout(30000)
             });
 
-            const isValid = response.ok;
-            console.log(isValid ? '✅ API Key is valid' : '❌ API Key is invalid');
-            return isValid;
-        } catch (error) {
-            console.error('❌ API Key validation failed:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Test the API with a simple request
-     */
-    async testConnection(): Promise<void> {
-        console.log('🧪 Testing Groq API connection...');
-
-        try {
-            const isValid = await this.validateAPIKey();
-            if (!isValid) {
-                throw new Error('API key validation failed');
+            if (!response.ok) {
+                throw new Error(`Test failed: ${response.status}`);
             }
 
-            console.log('🔄 Making test chat request...');
-            const testResponse = await this.simpleChat(
-                'You are a helpful assistant. Respond with "API is working!"',
-                'Test connection',
-                { max_tokens: 10 }
-            );
+            const data = await response.json();
+            console.log('✅ Groq API connected');
+            console.log('Response:', data.choices[0].message.content.substring(0, 100));
 
-            console.log('🎉 Groq API Test Successful!');
-            console.log('Test response:', testResponse);
         } catch (error: any) {
-            console.error('💥 Groq API Test Failed:', error.message);
+            console.error('❌ Groq test failed:', error.message);
             throw error;
         }
     }
 }
 
-// Create and export a singleton instance
-let groqInstance: GroqClient | null = null;
+// Export singleton instance
+let groqInstance: EnhancedGroqClient | null = null;
 
-export function getGroqClient(): GroqClient {
+export function getGroqClient(): EnhancedGroqClient {
     if (!groqInstance) {
-        groqInstance = new GroqClient();
+        groqInstance = new EnhancedGroqClient();
     }
     return groqInstance;
 }
 
-// Export the client class and helper functions
+// Export convenient wrapper
 export const groq = {
-    getClient: getGroqClient,
-
     /**
-     * Create a chat completion
+     * Generate slides (main method)
      */
-    async chat(messages: GroqChatMessage[], options?: any) {
+    async generateSlides(
+        systemPrompt: string,
+        userInput: string,
+        options?: {
+            model?: string;
+            temperature?: number;
+            maxTokens?: number;
+        }
+    ) {
         const client = getGroqClient();
-        return client.createChatCompletion(messages, options);
+        return client.generateSlides(systemPrompt, userInput, options);
     },
 
     /**
-     * Simple chat with system and user messages
-     */
-    async simple(systemPrompt: string, userMessage: string, options?: any) {
-        const client = getGroqClient();
-        return client.simpleChat(systemPrompt, userMessage, options);
-    },
-
-    /**
-     * Get JSON response
-     */
-    async json<T = any>(systemPrompt: string, userMessage: string, options?: any) {
-        const client = getGroqClient();
-        return client.createJSONChat<T>(systemPrompt, userMessage, options);
-    },
-
-    /**
-     * Test the API connection
+     * Test connection
      */
     async test() {
         const client = getGroqClient();
-        return client.testConnection();
+        return client.test();
     }
 };

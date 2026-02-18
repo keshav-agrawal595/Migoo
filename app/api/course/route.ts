@@ -1,10 +1,17 @@
 import { db } from "@/config/db";
 import { chapterContentSlides, coursesTable } from "@/config/schema";
-import { eq } from "drizzle-orm";
+import { currentUser } from "@clerk/nextjs/server";
+import { eq, desc } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
     const courseId = req.nextUrl.searchParams.get('courseId');
+    const user = await currentUser();
+
+    if(!courseId) {
+        const userCourses = await db.select().from(coursesTable).where(eq(coursesTable.userId, user?.primaryEmailAddress?.emailAddress as string)).orderBy(desc(coursesTable.id));
+        return NextResponse.json(userCourses);
+    }
 
     // In your /api/course route, add a join query:
     const course = await db.select().from(coursesTable).where(eq(coursesTable.courseId, courseId as string));

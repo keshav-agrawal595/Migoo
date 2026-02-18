@@ -1,9 +1,10 @@
 import { Course } from '@/type/CourseType';
 import { getAudioData } from "@remotion/media-utils";
-import { Player } from '@remotion/player';
+import { Player, PlayerRef } from '@remotion/player';
 import { BookOpen, ChartNoAxesColumnIncreasing, Clock, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CourseComposition } from './ChapterVideo';
+import { CustomPlayerControls, formatTime } from './CourseChapters';
 
 type Props = {
     course: Course | undefined;
@@ -13,6 +14,9 @@ function CourseInfoCard({ course }: Props) {
     const fps = 30;
     const slides = course?.chapterContentSlides ?? [];
     const [durationsBySlideId, setDurationsBySlideId] = useState<Record<string, number> | null>(null);
+
+    const playerRef = useRef<PlayerRef | null>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
 
     console.log('📦 CourseInfoCard - Course data:', {
         hasCourse: !!course,
@@ -48,21 +52,19 @@ function CourseInfoCard({ course }: Props) {
         return () => {
             cancelled = true;
         }
-    }, [slides.length, fps]); // Changed dependency from slides to slides.length
+    }, [slides.length, fps]);
 
     // Calculate total duration in frames and seconds
     const totalFrames = durationsBySlideId
         ? Object.values(durationsBySlideId).reduce((sum, frames) => sum + frames, 0)
         : 0;
     const totalSeconds = totalFrames / fps;
-    const totalMinutes = Math.floor(totalSeconds / 60);
-    const remainingSeconds = Math.floor(totalSeconds % 60);
 
     console.log("durationsBySlideId", durationsBySlideId);
     console.log("Total Duration:", {
         totalFrames,
         totalSeconds: totalSeconds.toFixed(2),
-        formatted: `${totalMinutes}m ${remainingSeconds}s`
+        formatted: formatTime(totalSeconds)
     });
 
     return (
@@ -79,23 +81,24 @@ function CourseInfoCard({ course }: Props) {
                         {durationsBySlideId && (
                             <h2 className='px-3 p-2 border rounded-4xl flex gap-2 items-center inline-flex text-white border-gray-200/70'>
                                 <Clock className='text-orange-400' />
-                                {totalMinutes}m {remainingSeconds}s
+                                {formatTime(totalSeconds)}
                             </h2>
                         )}
                     </div>
 
                 </div>
-                <div className='border-2 rounded-2xl border-white/10 overflow-hidden lg:col-span-2'>
+                {/* Player + custom controls wrapper for fullscreen */}
+                <div ref={containerRef} className='border-2 rounded-2xl border-white/10 overflow-hidden lg:col-span-2' style={{ background: '#000' }}>
                     <Player
+                        ref={playerRef}
                         component={CourseComposition}
                         durationInFrames={totalFrames || 30}
                         compositionWidth={1280}
                         compositionHeight={720}
                         fps={fps}
-                        controls
                         style={{
                             width: '100%',
-                            height: '100%',
+                            height: 'calc(100% - 34px)',
                         }}
                         inputProps={{
                             slides: slides.map(slide => ({
@@ -103,10 +106,16 @@ function CourseInfoCard({ course }: Props) {
                                 html: slide.html,
                                 audioFileUrl: slide.audioUrl,
                                 revealData: slide.revealData,
-                                caption: slide.captions  // Pass the entire caption object with chunks
+                                caption: slide.captions
                             })),
                             durationsBySlideId: durationsBySlideId || {}
                         }}
+                    />
+                    <CustomPlayerControls
+                        playerRef={playerRef}
+                        fps={fps}
+                        totalFrames={totalFrames || 30}
+                        containerRef={containerRef}
                     />
                 </div>
 
