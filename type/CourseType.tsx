@@ -35,5 +35,6 @@ export type ChapterContentSlide = {
     captions?: any;
     html: string;
     revealData: string[];
+    audioDuration?: number;
     createdAt: string;
 }

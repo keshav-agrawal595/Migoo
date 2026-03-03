@@ -11,6 +11,7 @@ function CoursePage() {
     const { courseId } = useParams();
     const [courseDetails, setCourseDetails] = useState<Course>();
     const isGenerating = useRef(false);
+    const hasGenerated = useRef(false);  // Prevent re-triggering after generation loop completes
 
     useEffect(() => {
         GetCourseDetails();
@@ -21,34 +22,55 @@ function CoursePage() {
         try {
             const res = await axios.get(`/api/course?courseId=${courseId}`);
 
-            console.log("=== DEBUG: Course Data Structure ===");
-            console.log("1. Course ID:", res.data?.courseId);
-            console.log("2. Course Name:", res.data?.courseName);
-            console.log("3. Course Layout exists?", !!res.data?.courseLayout);
-            console.log("4. Chapters in Layout:", res.data?.courseLayout?.chapters?.length);
-            console.log("5. ChapterContentSlides exists?", !!res.data?.chapterContentSlides);
-            console.log("6. ChapterContentSlides length:", res.data?.chapterContentSlides?.length);
-            console.log("=== END DEBUG ===");
-
             setCourseDetails(res.data);
             toast.success("Course Details Fetched Successfully!", {
                 id: loadingToast
             });
 
-            if (!res.data?.chapterContentSlides || res.data.chapterContentSlides.length === 0) {
-                if (!isGenerating.current) {
-                    console.log("✅ CONDITION TRUE: No slides found, generating content...");
+            // Check which chapters already have slides in the DB
+            const existingSlides = res.data?.chapterContentSlides || [];
+            const existingChapterIds = new Set(
+                existingSlides.map((slide: any) => slide.chapterId)
+            );
+            const allChapters = res.data?.courseLayout?.chapters || [];
+            const missingChapters = allChapters.filter(
+                (ch: any) => !existingChapterIds.has(ch.chapterId)
+            );
+
+            if (missingChapters.length > 0) {
+                if (!isGenerating.current && !hasGenerated.current) {
+                    console.log(`✅ ${missingChapters.length} chapter(s) missing slides, generating content...`);
+                    console.log("Missing chapters:", missingChapters.map((ch: any) => ch.chapterTitle));
                     GenerateVideoContent(res.data);
+                } else if (hasGenerated.current) {
+                    console.log("✅ Generation already completed (some chapters may be skipped in testing mode)");
                 } else {
                     console.log("⚠️ Generation already in progress, skipping...");
                 }
             } else {
-                console.log("❌ CONDITION FALSE: Slides already exist in database!");
-                console.log("Number of existing slides:", res.data.chapterContentSlides.length);
-                console.log("\n💡 TO REGENERATE CONTENT:");
-                console.log("1. Clear the chapter_content_slides table in your database");
-                console.log("2. OR modify the TESTING_MODE in generate-video-content/route.ts");
-                console.log("3. OR add a 'Regenerate' button to the UI");
+                console.log("✅ All chapters already have slides in database!");
+                console.log("Number of existing slides:", existingSlides.length);
+                console.log("Chapters with slides:", [...existingChapterIds]);
+            }
+
+            // ═══════════════════════════════════════════════════════════════════
+            // AUTO THUMBNAIL GENERATION (New or Migrate S3)
+            // ═══════════════════════════════════════════════════════════════════
+            const hasThumbnail = !!res.data?.courseThumbnail;
+            const isExternal = hasThumbnail && res.data.courseThumbnail.startsWith('http');
+
+            if ((!hasThumbnail || isExternal) && res.data?.courseId && res.data?.courseName) {
+                axios.post('/api/generate-thumbnail', {
+                    courseId: res.data.courseId,
+                    courseName: res.data.courseName
+                }).then(thumbRes => {
+                    // Refresh details to get the new thumbnail URL
+                    if (thumbRes.data?.success) {
+                        GetCourseDetails();
+                    }
+                }).catch(err => {
+                    console.error("❌ Auto-thumbnail generation failed:", err);
+                });
             }
         } catch (error) {
             console.error("❌ Error fetching course:", error);
@@ -164,6 +186,9 @@ function CoursePage() {
                         `✅ Video Content for Chapter ${i + 1} Generated Successfully! (${res.data.data?.length} slides)`,
                         { id: loadingToast, duration: 4000 }
                     );
+
+                    // Refresh UI immediately after each chapter
+                    await GetCourseDetails();
                 }
 
             } catch (error: any) {
@@ -188,6 +213,7 @@ function CoursePage() {
         console.log("═".repeat(80) + "\n");
 
         isGenerating.current = false;
+        hasGenerated.current = true;  // Prevent GetCourseDetails from re-triggering
 
         // Show final summary
         if (successCount > 0 || skippedCount > 0) {

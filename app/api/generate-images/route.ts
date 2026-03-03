@@ -1,15 +1,17 @@
 import { db } from "@/config/db";
 import { courseImages } from "@/config/schema";
-import { generateDeAPIImage } from "@/lib/deapi";
+import { putWithRotation } from "@/lib/blob";
+import { generateLeonardoImage, LEONARDO_STYLES } from "@/lib/leonardo";
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DeAPI IMAGE GENERATION — Multiple Images Per Chapter
+// Leonardo AI IMAGE GENERATION — Multiple Images Per Chapter
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Build a unique image prompt for each subcontent topic
+ * Build a unique, tech-relevant image prompt for each subcontent topic.
+ * Images feature tech symbols, icons, and visual metaphors — STRICTLY NO TEXT.
  */
 function buildImagePrompt(
     courseName: string,
@@ -17,21 +19,36 @@ function buildImagePrompt(
     subContentTopic: string,
     globalIndex: number
 ): string {
+    // Visual styles that rotate per image for variety
     const styles = [
-        "cinematic wide-angle photograph",
-        "professional digital illustration",
-        "futuristic concept art with neon accents",
-        "minimalist modern flat design",
-        "isometric 3D render with soft lighting",
-        "photorealistic close-up visualization",
-        "abstract geometric art with gradient colors",
-        "sleek tech-inspired infographic style",
-        "dramatic low-angle editorial photograph",
-        "watercolor-inspired digital painting"
+        "cinematic 3D render of glowing tech icons and symbols floating in space",
+        "isometric illustration of a developer workspace with holographic displays",
+        "futuristic concept art with neon circuitry patterns and code editor screens",
+        "minimalist flat design with abstract tech stack logos and geometric shapes",
+        "photorealistic close-up of circuit boards, chips, and glowing data streams",
+        "abstract digital art with interconnected nodes, neural network visualization",
+        "sleek dark-themed illustration of programming tools and development environment",
+        "dramatic low-angle 3D render of floating tech symbols and gear icons",
+        "vibrant gradient art with abstract representations of algorithms and data flow",
+        "modern glassmorphism UI concept with layered translucent tech panels"
     ];
-    const style = styles[globalIndex % styles.length];
 
-    return `${style} representing "${subContentTopic}" in the context of "${chapterTitle}", dark moody background, vibrant accent lighting, professional educational visual, ultra high quality`;
+    // Tech visual elements to reinforce relevancy
+    const techElements = [
+        "featuring relevant technology symbols, framework icons, and code brackets",
+        "with floating gear icons, terminal windows, and abstract API connections",
+        "showing symbolic representations of the tech stack like curly braces, angle brackets, and flow arrows",
+        "with glowing hexagonal nodes, data pipelines, and abstract architecture diagrams",
+        "featuring stylized keyboard keys, mouse cursor trails, and IDE-inspired color accents",
+        "with abstract representations of servers, databases, and cloud infrastructure symbols",
+        "showing interconnected puzzle pieces, modular blocks, and component hierarchy visuals",
+        "with symbolic code syntax elements like semicolons, parentheses, and hash symbols floating artistically"
+    ];
+
+    const style = styles[globalIndex % styles.length];
+    const techElement = techElements[globalIndex % techElements.length];
+
+    return `${style}, visually representing the concept of "${subContentTopic}" related to "${chapterTitle}" in a "${courseName}" course. ${techElement}. Dark moody background with vibrant accent lighting, professional educational technology visual, ultra high quality, 4K detail. STRICTLY NO TEXT ANYWHERE — no words, no letters, no numbers, no labels, no typography, no watermarks, no readable characters — ONLY visual symbols, icons, shapes, and abstract tech imagery`;
 }
 
 // How many images to generate per chapter
@@ -46,7 +63,7 @@ export async function POST(req: NextRequest) {
         const { courseName, courseId, chapters } = await req.json();
 
         console.log('\n' + '═'.repeat(80));
-        console.log('🖼️  DeAPI IMAGE GENERATION (SEQUENTIAL MODE)');
+        console.log('🖼️  Leonardo AI IMAGE GENERATION (SEQUENTIAL MODE)');
         console.log('═'.repeat(80));
         console.log('Course:', courseName);
         console.log('Course ID:', courseId);
@@ -102,16 +119,43 @@ export async function POST(req: NextRequest) {
                 const prompt = buildImagePrompt(courseName, chapterTitle, topicsForImages[imgIdx], globalIndex);
 
                 try {
-                    console.log(`  📸 [${globalIndex + 1}] Generating image...`);
-                    const imageUrl = await generateDeAPIImage(prompt, 768, 432, 4);
-                    console.log(`  ✅ [${globalIndex + 1}] Image ready: ${imageUrl.substring(0, 60)}...`);
+                    // Pick a tech-friendly style
+                    const techStyles = [
+                        LEONARDO_STYLES["Dynamic"],
+                        LEONARDO_STYLES["Ray Traced"],
+                        LEONARDO_STYLES["3D Render"],
+                        LEONARDO_STYLES["Graphic Design 3D"],
+                        LEONARDO_STYLES["Illustration"],
+                        LEONARDO_STYLES["Creative"]
+                    ];
+                    const selectedStyle = techStyles[Math.floor(Math.random() * techStyles.length)];
+
+                    console.log(`  📸 [${globalIndex + 1}] Generating image with Leonardo AI (Style: ${selectedStyle})...`);
+                    const leonardoUrl = await generateLeonardoImage(prompt, 768, 432, selectedStyle);
+                    console.log(`  ✅ Leonardo URL: ${leonardoUrl.substring(0, 60)}...`);
+
+                    // ⬇️ DOWNLOAD & UPLOAD TO VERCEL BLOB (PERSISTENCE FIX) ⬇️
+                    console.log(`  CLOUD UPLOAD: Saving to Vercel Blob...`);
+                    const imageRes = await fetch(leonardoUrl);
+                    if (!imageRes.ok) throw new Error(`Failed to fetch Leonardo image: ${imageRes.statusText}`);
+
+                    const imageBuffer = await imageRes.arrayBuffer();
+                    const filename = `images/${courseId}/${globalIndex}_${Date.now()}.webp`;
+
+                    const blob = await putWithRotation(filename, imageBuffer, {
+                        access: 'public',
+                        contentType: 'image/webp',
+                        addRandomSuffix: false
+                    });
+
+                    console.log(`  ✅ Saved permanently: ${blob.url}`);
 
                     // Save to DB
                     const [inserted] = await db.insert(courseImages).values({
                         courseId: courseId,
                         imageIndex: globalIndex,
                         imagePrompt: prompt.substring(0, 500),
-                        imageUrl: imageUrl,
+                        imageUrl: blob.url, // Use permanent Blob URL
                         width: 768,
                         height: 432
                     }).returning();
@@ -140,7 +184,7 @@ export async function POST(req: NextRequest) {
             data: generatedImages,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'deapi-flux1schnell',
+                engine: 'leonardo-flux-schnell',
                 courseId,
                 totalRequested: totalExpected,
                 totalGenerated: generatedImages.length,

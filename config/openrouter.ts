@@ -10,6 +10,7 @@ interface OpenRouterResponse {
             content: string;
             reasoning_details?: unknown;
         };
+        finish_reason?: string;
     }>;
     usage?: {
         prompt_tokens: number;
@@ -111,15 +112,23 @@ CRITICAL OUTPUT RULES:
             }
 
             const rawText = data.choices[0].message.content;
+            const finishReason = data.choices[0].finish_reason;
+            const wasTruncated = finishReason === 'length';
 
             console.log('✅ OpenRouter response received:', {
                 length: rawText.length,
                 tokens: data.usage?.total_tokens,
+                finishReason,
+                wasTruncated,
                 preview: rawText.substring(0, 200) + '...'
             });
 
+            if (wasTruncated) {
+                console.warn('⚠️ Response was TRUNCATED (finish_reason=length). Will attempt to repair JSON...');
+            }
+
             // Parse JSON from response
-            return this.extractAndParseJSON(rawText);
+            return this.extractAndParseJSON(rawText, wasTruncated);
 
         } catch (error: any) {
             console.error('❌ OpenRouter API Error:', error.message);
@@ -130,7 +139,7 @@ CRITICAL OUTPUT RULES:
     /**
      * Extract and parse JSON with smart HTML handling
      */
-    private extractAndParseJSON(text: string): any {
+    private extractAndParseJSON(text: string, wasTruncated: boolean = false): any {
         console.log('🔧 Extracting JSON from response...');
 
         let cleaned = text.trim();
@@ -155,12 +164,26 @@ CRITICAL OUTPUT RULES:
 
         let jsonStr = cleaned.substring(jsonStart).trim();
 
+        // If truncated, try repair FIRST before other strategies
+        if (wasTruncated) {
+            console.log('🔧 Response truncated — trying truncation repair first...');
+            try {
+                const repaired = this.repairTruncatedJSON(jsonStr);
+                if (repaired) {
+                    console.log(`✅ Truncation repair succeeded!`);
+                    return repaired;
+                }
+            } catch (e: any) {
+                console.warn('⚠️ Truncation repair failed:', e.message);
+            }
+        }
+
         // Try progressive parsing strategies
         const strategies = [
             () => JSON.parse(jsonStr),
             () => this.parseWithHtmlFix(jsonStr),
             () => this.parseWithSmartQuoteEscape(jsonStr),
-            () => this.parseWithBruteForce(jsonStr),
+            () => this.parseWithBruteForce(jsonStr, wasTruncated),
         ];
 
         for (let i = 0; i < strategies.length; i++) {
@@ -219,8 +242,13 @@ CRITICAL OUTPUT RULES:
     /**
      * Brute force: Extract valid JSON by finding matching brackets
      */
-    private parseWithBruteForce(jsonStr: string): any {
+    private parseWithBruteForce(jsonStr: string, wasTruncated: boolean = false): any {
         console.log('🔨 Attempting brute force JSON extraction...');
+
+        // For truncated responses, try to extract complete slide objects
+        if (wasTruncated) {
+            return this.extractCompleteSlides(jsonStr);
+        }
 
         let depth = 0;
         let inString = false;
@@ -306,6 +334,120 @@ CRITICAL OUTPUT RULES:
         }
 
         console.log(`✅ Manually extracted ${slides.length} slides`);
+        return slides;
+    }
+
+    /**
+     * Repair truncated JSON by closing open strings, objects, and arrays.
+     * Extracts as many complete slide objects as possible.
+     */
+    private repairTruncatedJSON(jsonStr: string): any {
+        console.log('🔧 Repairing truncated JSON...');
+        console.log(`📏 Input length: ${jsonStr.length} chars`);
+
+        // Strategy: Find complete top-level objects in the array
+        const slides = this.extractCompleteSlides(jsonStr);
+        if (slides && slides.length > 0) {
+            return slides;
+        }
+
+        throw new Error('Could not repair truncated JSON');
+    }
+
+    /**
+     * Extract complete slide objects from a potentially truncated JSON array.
+     * Walks through character by character, tracking depth, and extracts
+     * each complete top-level object from the array.
+     */
+    private extractCompleteSlides(jsonStr: string): any[] {
+        console.log('🔍 Extracting complete slide objects from truncated response...');
+
+        const slides: any[] = [];
+
+        // Find the opening '[' of the array
+        const arrayStart = jsonStr.indexOf('[');
+        if (arrayStart === -1) {
+            throw new Error('No JSON array found');
+        }
+
+        let i = arrayStart + 1; // Start after '['
+
+        while (i < jsonStr.length) {
+            // Skip whitespace and commas between objects
+            while (i < jsonStr.length && /[\s,]/.test(jsonStr[i])) {
+                i++;
+            }
+
+            if (i >= jsonStr.length || jsonStr[i] === ']') break;
+
+            // We should be at '{' — start of a slide object
+            if (jsonStr[i] !== '{') {
+                i++;
+                continue;
+            }
+
+            const objStart = i;
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            let complete = false;
+
+            for (let j = objStart; j < jsonStr.length; j++) {
+                const char = jsonStr[j];
+
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+
+                if (char === '\\' && inString) {
+                    escape = true;
+                    continue;
+                }
+
+                if (char === '"' && !escape) {
+                    inString = !inString;
+                    continue;
+                }
+
+                if (!inString) {
+                    if (char === '{' || char === '[') {
+                        depth++;
+                    } else if (char === '}' || char === ']') {
+                        depth--;
+                        if (depth === 0) {
+                            // Found complete object
+                            const objStr = jsonStr.substring(objStart, j + 1);
+                            try {
+                                const parsed = JSON.parse(objStr);
+                                // Validate it looks like a slide
+                                if (parsed && (parsed.slideId || parsed.html || parsed.narration)) {
+                                    slides.push(parsed);
+                                    console.log(`✅ Extracted complete slide ${slides.length}: ${parsed.slideId || 'unknown'}`);
+                                }
+                            } catch (parseErr) {
+                                console.warn(`⚠️ Found complete brackets but JSON invalid at position ${objStart}`);
+                            }
+                            i = j + 1;
+                            complete = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!complete) {
+                // Object was truncated — we've extracted all complete slides
+                console.log(`⚠️ Hit truncated object at position ${objStart} — stopping extraction`);
+                break;
+            }
+        }
+
+        if (slides.length === 0) {
+            throw new Error('Could not extract any complete slides from truncated response');
+        }
+
+        console.log(`✅ Successfully extracted ${slides.length} complete slides from truncated response`);
         return slides;
     }
 

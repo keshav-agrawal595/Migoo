@@ -21,7 +21,7 @@ const DrawOutlineButton = ({
         <button
             type={type}
             onClick={onClick}
-            className={`group relative px-6 py-3 font-medium text-slate-900 transition-colors duration-[400ms] hover:text-indigo-600 bg-white rounded-lg ${fullWidth ? 'w-full' : ''
+            className={`group relative px-6 py-3 font-medium text-slate-900 transition-colors duration-[400ms] hover:text-indigo-600 bg-transparent rounded-lg ${fullWidth ? 'w-full' : ''
                 } ${className}`}
         >
             <span className="relative z-10">{children}</span>

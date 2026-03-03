@@ -1,4 +1,4 @@
-import { integer, json, pgTable, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { integer, json, pgTable, real, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const usersTable = pgTable("users", {
     id: integer().primaryKey().generatedAlwaysAsIdentity(),
@@ -16,7 +16,7 @@ export const coursesTable = pgTable("courses", {
     type: varchar({ length: 255 }).notNull(),
     courseLayout: json().notNull(),
     createdAt: timestamp("created_at").defaultNow(),
-    courseThumbnail: varchar({ length: 1000 }),
+    courseThumbnail: text(),
 })
 
 export const courseImages = pgTable("course_images", {
@@ -42,5 +42,6 @@ export const chapterContentSlides = pgTable("chapter_content_slides", {
     captions: json(),
     html: text(),
     revealData: json().notNull(),
+    audioDuration: real("audio_duration"),
     createdAt: timestamp("created_at").defaultNow(),
 })

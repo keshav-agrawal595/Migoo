@@ -1,8 +1,8 @@
 "use client"
-import React, { useEffect, useState } from 'react'
-import axios from 'axios'
 import { UserDetailContext } from '@/context/UserDetailContext';
 import { useUser } from '@clerk/nextjs';
+import axios from 'axios';
+import React, { useEffect, useState } from 'react';
 
 function Provider({ children }: { children: React.ReactNode }) {
     const { isSignedIn, isLoaded } = useUser();
@@ -10,7 +10,7 @@ function Provider({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         const CreateNewUser = async () => {
-            if (isLoaded && isSignedIn) {
+            if (isLoaded && isSignedIn && !userDetail) {
                 try {
                     const result = await axios.post('/api/user', {});
                     console.log(result.data);

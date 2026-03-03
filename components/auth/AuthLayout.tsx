@@ -1,9 +1,8 @@
 'use client';
-import { ReactNode, useState, useEffect, useCallback, createContext, useContext } from 'react';
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import Image from 'next/image';
 import NeumorphismButton from '@/components/ui/NeumorphismButton';
+import Image from 'next/image';
+import { usePathname, useRouter } from 'next/navigation';
+import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 
 // Create context for sharing slide state
 const SlideContext = createContext<{
@@ -89,7 +88,7 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
 
     return (
         <SlideContext.Provider value={{ currentSlide, setCurrentSlide }}>
-            <div className="relative h-screen w-screen overflow-hidden bg-background">
+            <div className="relative h-screen w-full overflow-hidden bg-background">
                 {/* Background image from carousel - BLURRED */}
                 <div className="absolute inset-0 z-0">
                     <Image
@@ -115,7 +114,7 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
                 {/* Main content */}
                 <div className="flex h-full w-full relative z-10">
                     {/* Left panel - Auth forms */}
-                    <div className="flex flex-col items-center justify-center w-full lg:w-2/5 px-4 py-8 relative">
+                    <div className="flex flex-col items-center justify-center w-full lg:w-2/5 px-4 py-4 relative">
                         {/* SIGNIN BACKGROUND IMAGE - ADDED HERE */}
                         <div
                             className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-10 mix-blend-overlay"
@@ -235,14 +234,8 @@ function CarouselSection() {
             <header className="absolute top-0 left-0 w-full z-50 px-8 py-6 mb-8"> {/* Added mb-8 */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-white/20 to-white/10 backdrop-blur-xl border border-white/30 flex items-center justify-center">
-                            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14v6l9-5M12 20l-9-5" />
-                            </svg>
-                        </div>
                         <span className="text-xl font-semibold text-white drop-shadow-lg">
-                            EduAI
+                            {/* Brand name removed */}
                         </span>
                     </div>
 

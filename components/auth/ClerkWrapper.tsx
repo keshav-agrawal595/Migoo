@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import {
+    ClerkProvider,
+    RedirectToSignIn,
     SignIn,
     SignUp,
     useAuth,
-    ClerkProvider,
-    RedirectToSignIn,
 } from '@clerk/nextjs';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 const customAppearance = {
     variables: {
@@ -165,14 +166,15 @@ export function CustomSignIn() {
                     clerkButton.click();
                 };
 
-                // Create our custom button element
+                // Create our custom button element matching DrawOutlineButton.tsx
                 const customButton = document.createElement('button');
                 customButton.type = 'button';
-                customButton.className = 'group relative px-6 py-3 font-medium text-slate-800 transition-colors duration-[400ms] hover:text-indigo-600 w-full bg-transparent cursor-pointer';
+                customButton.className = 'group relative px-6 py-3 font-medium text-slate-900 transition-colors duration-[400ms] hover:text-indigo-600 w-full bg-transparent rounded-lg cursor-pointer';
                 customButton.onclick = handleCustomClick;
 
                 // Button text
                 const textSpan = document.createElement('span');
+                textSpan.className = 'relative z-10';
                 textSpan.textContent = 'Continue';
                 customButton.appendChild(textSpan);
 
@@ -224,28 +226,24 @@ export function CustomSignIn() {
     if (!mounted) return null;
 
     return (
-        <div className="w-full animate-fade-in-up">
+        <div className="w-full">
             <div className="flex flex-col items-center mb-8">
-                <div className="relative mb-4">
-                    <div className="absolute inset-0 bg-gradient-to-r from-primary via-secondary to-accent blur-xl opacity-20 animate-pulse-slow" />
-                    <div className="relative w-12 h-12 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg">
-                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14v6l9-5M12 20l-9-5" />
-                        </svg>
-                    </div>
+                <div className="relative">
+                    <div className="absolute inset-0 bg-linear-to-r from-primary via-secondary to-accent blur-xl opacity-20 animate-pulse-slow" />
+                    <Image src={'/logo-transparent.png'} alt='logo' width={100} height={100} />
                 </div>
 
                 <h1 className="text-2xl font-semibold text-center text-foreground mb-2">
                     Welcome Back
                 </h1>
                 <p className="text-sm text-muted-foreground text-center mb-6">
-                    Sign in to your EduAI account
+                    Sign in to your account
                 </p>
             </div>
 
             <SignIn
-                routing="hash"
+                routing="path"
+                path="/sign-in"
                 appearance={customAppearance}
                 signUpUrl="/sign-up"
             />
@@ -286,14 +284,15 @@ export function CustomSignUp() {
                     clerkButton.click();
                 };
 
-                // Create our custom button element
+                // Create our custom button element matching DrawOutlineButton.tsx
                 const customButton = document.createElement('button');
                 customButton.type = 'button';
-                customButton.className = 'group relative px-6 py-3 font-medium text-slate-800 transition-colors duration-[400ms] hover:text-indigo-600 w-full bg-transparent';
+                customButton.className = 'group relative px-6 py-3 font-medium text-slate-900 transition-colors duration-[400ms] hover:text-indigo-600 w-full bg-transparent rounded-lg cursor-pointer';
                 customButton.onclick = handleCustomClick;
 
                 // Button text
                 const textSpan = document.createElement('span');
+                textSpan.className = 'relative z-10';
                 textSpan.textContent = 'Continue';
                 customButton.appendChild(textSpan);
 
@@ -345,28 +344,24 @@ export function CustomSignUp() {
     if (!mounted) return null;
 
     return (
-        <div className="w-full animate-fade-in-up scale-90">
-            <div className="flex flex-col items-center mb-6">
-                <div className="relative mb-6">
-                    <div className="absolute inset-0 bg-gradient-to-r from-primary via-secondary to-accent blur-xl opacity-20 animate-pulse-slow" />
-                    <div className="relative w-14 h-14 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-lg">
-                        <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14l9-5-9-5-9 5 9 5z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 14v6l9-5M12 20l-9-5" />
-                        </svg>
-                    </div>
+        <div className="w-full">
+            <div className="flex flex-col items-center mb-3">
+                <div className="relative mb-3">
+                    <div className="absolute inset-0 bg-linear-to-r from-primary via-secondary to-accent blur-xl opacity-20 animate-pulse-slow" />
+                    <Image src={'/logo-transparent.png'} alt='logo' width={70} height={70} />
                 </div>
 
-                <h1 className="text-xl font-semibold text-center text-foreground mb-1.5">
+                <h1 className="text-lg font-semibold text-center text-foreground mb-1">
                     Create Account
                 </h1>
-                <p className="text-xs text-muted-foreground text-center mb-4">
-                    Join EduAI and start creating amazing courses
+                <p className="text-xs text-muted-foreground text-center mb-2">
+                    Join us and start creating amazing courses
                 </p>
             </div>
 
             <SignUp
-                routing="hash"
+                routing="path"
+                path="/sign-up"
                 appearance={customAppearance}
                 signInUrl="/sign-in"
             />

@@ -24,6 +24,9 @@ function CourseListCard({ courseItem }: Props) {
             <img
               src={courseItem.courseThumbnail}
               alt={courseItem.courseName}
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
               className='w-full h-full object-cover rounded-lg'
             />
           ) : (

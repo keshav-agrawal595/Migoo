@@ -1,11 +1,18 @@
 "use client"
 import { Button } from '@/components/ui/button';
-import { UserButton, useUser } from '@clerk/nextjs'
-import Image from 'next/image'
-import Link from 'next/link'
+import { UserButton, useUser } from '@clerk/nextjs';
+import Image from 'next/image';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
 function Header() {
     const { isSignedIn, isLoaded } = useUser();
+    const pathname = usePathname();
+
+    // Hide header on auth pages
+    if (pathname === '/sign-in' || pathname === '/sign-up') {
+        return null;
+    }
 
     // Show loading state
     if (!isLoaded) {

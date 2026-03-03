@@ -18,36 +18,35 @@ function getKeys(): string[] {
         .filter((key): key is string => !!key && key.length > 0);
 }
 
-/** Track which key index to use next (round-robin) */
+/** Track which key index to use next (round-robin for submissions) */
 let currentKeyIndex = 0;
 
-/** Get the next available API key */
-function getNextKey(): string {
+/** Get the current API key without rotating */
+function getCurrentKey(): string {
     const keys = getKeys();
     if (keys.length === 0) {
         throw new Error("No DEAPI_API_KEY found in environment variables");
     }
-    const key = keys[currentKeyIndex % keys.length];
-    return key;
+    return keys[currentKeyIndex % keys.length];
 }
 
-/** Rotate to the next key */
+/** Rotate to the next key (only for next submission, NOT mid-job) */
 function rotateKey(): void {
     const keys = getKeys();
     currentKeyIndex = (currentKeyIndex + 1) % keys.length;
-    console.log(`🔄 Rotated to DeAPI key #${(currentKeyIndex % keys.length) + 1} of ${keys.length}`);
+    console.log(`🔄 Rotated to DeAPI key #${currentKeyIndex + 1} of ${keys.length}`);
 }
 
 /**
  * Submit a txt2img job to DeAPI with automatic key rotation on 429.
- * Tries every key once before giving up.
+ * Returns the request_id AND the key used (so polling uses the same key).
  */
-export async function submitDeAPIJob(prompt: string, width: number, height: number, steps: number): Promise<string> {
+async function submitDeAPIJob(prompt: string, width: number, height: number, steps: number): Promise<{ requestId: string; apiKey: string }> {
     const keys = getKeys();
     const maxRetries = keys.length;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-        const apiKey = getNextKey();
+        const apiKey = getCurrentKey();
         const keyNum = (currentKeyIndex % keys.length) + 1;
 
         try {
@@ -66,7 +65,7 @@ export async function submitDeAPIJob(prompt: string, width: number, height: numb
                     guidance: 7.5,
                     steps,
                     seed: Math.floor(Math.random() * 999999),
-                    negative_prompt: "blur, darkness, noise, low quality, distorted text, unreadable"
+                    negative_prompt: "blur, darkness, noise, low quality, distorted text, unreadable, text, words, letters, typography, watermark"
                 })
             });
 
@@ -90,11 +89,11 @@ export async function submitDeAPIJob(prompt: string, width: number, height: numb
 
             console.log(`⏳ DeAPI job submitted with key #${keyNum}, request_id: ${requestId}`);
 
-            // After successful submission, rotate to next key for next call
-            // This distributes load across keys proactively
+            // Rotate AFTER capturing the key, so next submission uses a different key
             rotateKey();
 
-            return requestId;
+            // Return both requestId AND the key that submitted it
+            return { requestId, apiKey };
 
         } catch (error: any) {
             if (error.message.includes("429") || error.message.includes("Too Many Attempts")) {
@@ -111,15 +110,11 @@ export async function submitDeAPIJob(prompt: string, width: number, height: numb
 
 /**
  * Poll for a DeAPI job result until done.
- * Uses the current key for polling (auto-rotates on 429 during polling too).
+ * IMPORTANT: Uses the SAME key that submitted the job.
  */
-export async function pollDeAPIJob(requestId: string, maxAttempts: number = 60): Promise<string> {
-    const keys = getKeys();
-
+async function pollDeAPIJob(requestId: string, apiKey: string, maxAttempts: number = 60): Promise<string> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-
-        const apiKey = getNextKey();
 
         try {
             const statusResponse = await fetch(`https://api.deapi.ai/api/v1/client/request-status/${requestId}`, {
@@ -130,8 +125,8 @@ export async function pollDeAPIJob(requestId: string, maxAttempts: number = 60):
             });
 
             if (statusResponse.status === 429) {
-                console.warn(`⚠️ Polling rate-limited, rotating key...`);
-                rotateKey();
+                console.warn(`⚠️ Polling rate-limited, waiting extra time...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
                 continue;
             }
 
@@ -162,7 +157,7 @@ export async function pollDeAPIJob(requestId: string, maxAttempts: number = 60):
 
         } catch (error: any) {
             if (error.message.includes("429")) {
-                rotateKey();
+                await new Promise(resolve => setTimeout(resolve, 5000));
                 continue;
             }
             throw error;
@@ -174,10 +169,10 @@ export async function pollDeAPIJob(requestId: string, maxAttempts: number = 60):
 
 /**
  * Generate an image using DeAPI with full key rotation support.
- * Submit job → poll for result → return full-res URL.
+ * Submit job → poll for result (same key) → return full-res URL.
  */
 export async function generateDeAPIImage(prompt: string, width: number = 768, height: number = 432, steps: number = 4): Promise<string> {
-    const requestId = await submitDeAPIJob(prompt, width, height, steps);
-    const imageUrl = await pollDeAPIJob(requestId);
+    const { requestId, apiKey } = await submitDeAPIJob(prompt, width, height, steps);
+    const imageUrl = await pollDeAPIJob(requestId, apiKey);
     return imageUrl;
 }

@@ -1,9 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Course } from '@/type/CourseType';
-import { getAudioData } from '@remotion/media-utils';
 import { Player, PlayerRef } from '@remotion/player';
 import { Dot, Maximize, Minimize, Pause, Play, SkipBack, SkipForward } from 'lucide-react';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CourseComposition } from './ChapterVideo';
 
 type Props = {
@@ -92,10 +91,24 @@ export function CustomPlayerControls({
     const toggleFullscreen = useCallback(() => {
         const el = containerRef?.current;
         if (!el) return;
-        if (document.fullscreenElement) {
-            document.exitFullscreen();
-        } else {
-            el.requestFullscreen();
+
+        try {
+            if (document.fullscreenElement || (document as any).webkitFullscreenElement || (document as any).mozFullScreenElement || (document as any).msFullscreenElement) {
+                const exitMethod = document.exitFullscreen || (document as any).webkitExitFullscreen || (document as any).mozCancelFullScreen || (document as any).msExitFullscreen;
+                if (exitMethod) {
+                    exitMethod.call(document).catch(() => { });
+                }
+            } else {
+                const requestMethod = el.requestFullscreen || (el as any).webkitRequestFullscreen || (el as any).mozRequestFullScreen || (el as any).msRequestFullscreen;
+
+                if (requestMethod) {
+                    requestMethod.call(el).catch(() => {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    });
+                }
+            }
+        } catch (error) {
+            // Silently fail
         }
     }, [containerRef]);
 
@@ -118,9 +131,12 @@ export function CustomPlayerControls({
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
-            padding: '6px 10px',
+            padding: '8px 12px',
             background: 'rgba(0,0,0,0.85)',
             borderRadius: '0 0 8px 8px',
+            width: '100%',
+            boxSizing: 'border-box',
+            height: '44px', // Fixed height for consistency
         }}>
             {/* Skip Back 5s */}
             <button onClick={() => skip(-5)} title="Skip back 5 seconds" style={btnStyle}>
@@ -128,24 +144,25 @@ export function CustomPlayerControls({
             </button>
 
             {/* Play/Pause */}
-            <button onClick={togglePlay} title={isPlaying ? 'Pause' : 'Play'} style={btnStyle}>
-                {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+            <button onClick={togglePlay} title={isPlaying ? 'Pause' : 'Play'} style={{ ...btnStyle, margin: '0 4px' }}>
+                {isPlaying ? <Pause size={20} fill="white" /> : <Play size={20} fill="white" />}
             </button>
 
             {/* Skip Forward 5s */}
             <button onClick={() => skip(5)} title="Skip forward 5 seconds" style={btnStyle}>
-                <SkipForward size={14} />
+                <SkipForward size={16} />
             </button>
 
-            {/* Progress bar */}
+            {/* Progress bar container */}
             <div
                 style={{
                     flex: 1,
-                    height: '4px',
-                    background: 'rgba(255,255,255,0.3)',
-                    borderRadius: '2px',
+                    height: '24px', // Taller hit area
+                    display: 'flex',
+                    alignItems: 'center',
                     cursor: 'pointer',
                     position: 'relative',
+                    margin: '0 8px'
                 }}
                 onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
@@ -153,30 +170,74 @@ export function CustomPlayerControls({
                     const frame = Math.round(pct * totalFrames);
                     playerRef.current?.seekTo(Math.max(0, Math.min(totalFrames - 1, frame)));
                 }}
+                onMouseEnter={(e) => {
+                    const bar = e.currentTarget.querySelector('.progress-bar-bg') as HTMLDivElement;
+                    if (bar) bar.style.height = '6px';
+                }}
+                onMouseLeave={(e) => {
+                    const bar = e.currentTarget.querySelector('.progress-bar-bg') as HTMLDivElement;
+                    if (bar) bar.style.height = '4px';
+                }}
             >
-                <div style={{
-                    width: `${progress}%`,
-                    height: '100%',
-                    background: '#3b82f6',
-                    borderRadius: '2px',
-                    transition: 'width 0.1s',
-                }} />
+                {/* Background bar */}
+                <div className="progress-bar-bg" style={{
+                    width: '100%',
+                    height: '4px',
+                    background: 'rgba(255,255,255,0.2)',
+                    borderRadius: '3px',
+                    position: 'relative',
+                    transition: 'height 0.1s'
+                }}>
+                    {/* Progress fill */}
+                    <div style={{
+                        width: `${progress}%`,
+                        height: '100%',
+                        background: '#ef4444', // YouTube red
+                        borderRadius: '3px',
+                        transition: 'width 0.1s',
+                        position: 'relative'
+                    }}>
+                        {/* Thumb / Knob */}
+                        <div style={{
+                            position: 'absolute',
+                            right: '-6px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: '12px',
+                            height: '12px',
+                            borderRadius: '50%',
+                            background: '#ef4444',
+                            boxShadow: '0 0 10px rgba(0,0,0,0.8)',
+                            display: progress > 0 ? 'block' : 'none',
+                            border: '2px solid white'
+                        }} />
+                    </div>
+                </div>
             </div>
 
             {/* Time label */}
             <span style={{
                 color: 'white',
-                fontSize: '11px',
+                fontSize: '12px',
                 fontFamily: 'monospace',
                 whiteSpace: 'nowrap',
+                minWidth: '70px',
+                textAlign: 'center'
             }}>
                 {formatTime(currentTime)} / {formatTime(totalTime)}
             </span>
 
             {/* Fullscreen toggle */}
             {containerRef && (
-                <button onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} style={btnStyle}>
-                    {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFullscreen();
+                    }}
+                    title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                    style={btnStyle}
+                >
+                    {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
                 </button>
             )}
         </div>
@@ -185,75 +246,74 @@ export function CustomPlayerControls({
 
 function CourseChapters({ course }: Props) {
     const fps = 30;
-    const [durationsByChapterId, setDurationsByChapterId] = useState<Record<string, {
-        slidesDurations: Record<string, number>;
-        totalFrames: number;
-    }> | null>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
+    const [startedChapters, setStartedChapters] = useState<Record<string, boolean>>({});
 
     // Store refs for each chapter's player and container
     const playerRefs = useRef<Record<string, React.RefObject<PlayerRef | null>>>({});
     const containerRefs = useRef<Record<string, React.RefObject<HTMLDivElement | null>>>({});
 
-    // Track fullscreen state globally
+    // Track fullscreen state globally with vendor prefix support
     useEffect(() => {
-        const handler = () => setIsFullscreen(!!document.fullscreenElement);
+        const getFullscreenElement = () => {
+            return document.fullscreenElement ||
+                (document as any).webkitFullscreenElement ||
+                (document as any).mozFullScreenElement ||
+                (document as any).msFullscreenElement;
+        };
+
+        const handler = () => setIsFullscreen(!!getFullscreenElement());
+
         document.addEventListener('fullscreenchange', handler);
-        return () => document.removeEventListener('fullscreenchange', handler);
+        document.addEventListener('webkitfullscreenchange', handler);
+        document.addEventListener('mozfullscreenchange', handler);
+        document.addEventListener('MSFullscreenChange', handler);
+
+        return () => {
+            document.removeEventListener('fullscreenchange', handler);
+            document.removeEventListener('webkitfullscreenchange', handler);
+            document.removeEventListener('mozfullscreenchange', handler);
+            document.removeEventListener('MSFullscreenChange', handler);
+        };
     }, []);
 
-    useEffect(() => {
-        let cancelled = false;
+    // Instantly compute durations from stored audioDuration (no async fetch needed)
+    const durationsByChapterId = useMemo(() => {
+        if (!course?.chapterContentSlides || course.chapterContentSlides.length === 0) {
+            return null;
+        }
 
-        const calculateDurations = async () => {
-            if (!course?.chapterContentSlides || course.chapterContentSlides.length === 0) {
-                setDurationsByChapterId(null);
-                return;
-            }
+        // Only compute if at least one slide has audioDuration
+        const hasAnyDuration = course.chapterContentSlides.some(
+            s => s.audioDuration != null && s.audioDuration > 0
+        );
+        if (!hasAnyDuration) return null;
 
-            console.log('🎵 Calculating durations per chapter...');
+        const chapters = course.courseLayout?.chapters || [];
+        const durationsMap: Record<string, { slidesDurations: Record<string, number>; totalFrames: number }> = {};
 
-            const chapters = course.courseLayout?.chapters || [];
-            const durationsMap: Record<string, { slidesDurations: Record<string, number>; totalFrames: number }> = {};
+        for (const chapter of chapters) {
+            const chapterSlides = course.chapterContentSlides.filter(
+                slide => slide.chapterId === chapter.chapterId
+            );
 
-            for (const chapter of chapters) {
-                const chapterSlides = course.chapterContentSlides.filter(
-                    slide => slide.chapterId === chapter.chapterId
-                );
+            if (chapterSlides.length > 0) {
+                const slidesDurations: Record<string, number> = {};
+                let totalFrames = 0;
 
-                if (chapterSlides.length > 0) {
-                    const slidesDurations: Record<string, number> = {};
-                    let totalFrames = 0;
-
-                    for (const slide of chapterSlides) {
-                        try {
-                            const audioData = await getAudioData(slide.audioUrl);
-                            const audioSeconds = audioData.durationInSeconds;
-                            const frames = Math.max(1, Math.ceil(audioSeconds * fps));
-                            slidesDurations[slide.slideId] = frames;
-                            totalFrames += frames;
-                        } catch (error) {
-                            console.error(`Error getting audio data for slide ${slide.slideId}:`, error);
-                            slidesDurations[slide.slideId] = 30;
-                            totalFrames += 30;
-                        }
-                    }
-
-                    durationsMap[chapter.chapterId] = { slidesDurations, totalFrames };
-                    console.log(`✅ Chapter ${chapter.chapterId}: ${chapterSlides.length} slides, ${totalFrames} frames`);
+                for (const slide of chapterSlides) {
+                    const seconds = slide.audioDuration ?? 1; // fallback 1 second
+                    const frames = Math.max(1, Math.ceil(seconds * fps));
+                    slidesDurations[slide.slideId] = frames;
+                    totalFrames += frames;
                 }
-            }
 
-            if (!cancelled) {
-                setDurationsByChapterId(durationsMap);
+                durationsMap[chapter.chapterId] = { slidesDurations, totalFrames };
             }
-        };
+        }
 
-        calculateDurations();
-        return () => {
-            cancelled = true;
-        };
-    }, [course?.chapterContentSlides?.length, fps]);
+        return durationsMap;
+    }, [course?.chapterContentSlides, course?.courseLayout?.chapters, fps]);
 
     // Get or create refs for a chapter
     const getPlayerRef = (chapterId: string) => {
@@ -267,6 +327,16 @@ function CourseChapters({ course }: Props) {
             containerRefs.current[chapterId] = { current: null };
         }
         return containerRefs.current[chapterId];
+    };
+
+    const handleChapterPlay = (chapterId: string) => {
+        setStartedChapters(prev => ({ ...prev, [chapterId]: true }));
+        setTimeout(() => {
+            const pRef = playerRefs.current[chapterId];
+            if (pRef?.current) {
+                pRef.current.play();
+            }
+        }, 100);
     };
 
     return (
@@ -284,6 +354,8 @@ function CourseChapters({ course }: Props) {
                     const pRef = getPlayerRef(chapter.chapterId);
                     const cRef = getContainerRef(chapter.chapterId);
                     const totalFrames = chapterDurations?.totalFrames || 30;
+                    const chapterStarted = startedChapters[chapter.chapterId] || false;
+                    const chapterSeconds = totalFrames / fps;
 
                     return (
                         <Card key={index} className='mb-5'>
@@ -310,50 +382,149 @@ function CourseChapters({ course }: Props) {
                                     <div ref={cRef} style={{
                                         background: '#000',
                                         borderRadius: '8px',
+                                        overflow: 'hidden',
                                         display: 'flex',
                                         flexDirection: 'column',
-                                        ...(isFullscreen ? { height: '100%', width: '100%' } : {}),
+                                        position: 'relative',
+                                        ...(isFullscreen ? { height: '100%', width: '100%' } : { height: '214px' }),
                                     }}>
-                                        <Player
-                                            ref={pRef}
-                                            component={CourseComposition}
-                                            durationInFrames={totalFrames}
-                                            compositionWidth={1280}
-                                            compositionHeight={720}
-                                            fps={fps}
-                                            style={{
-                                                width: '100%',
-                                                borderRadius: isFullscreen ? '0' : '8px 8px 0 0',
-                                                ...(isFullscreen
-                                                    ? { flex: 1, height: 'auto' }
-                                                    : { height: '180px' }),
-                                            }}
-                                            inputProps={{
-                                                slides: chapterSlides.map(slide => ({
-                                                    slideId: slide.slideId,
-                                                    html: slide.html,
-                                                    audioFileUrl: slide.audioUrl,
-                                                    revealData: slide.revealData,
-                                                    caption: slide.captions
-                                                })),
-                                                durationsBySlideId: chapterDurations?.slidesDurations || {}
-                                            }}
-                                        />
-                                        <CustomPlayerControls
-                                            playerRef={pRef}
-                                            fps={fps}
-                                            totalFrames={totalFrames}
-                                            containerRef={cRef}
-                                        />
+                                        {!chapterStarted ? (
+                                            /* YouTube-style black placeholder overlay */
+                                            <div
+                                                style={{
+                                                    position: 'absolute',
+                                                    top: 0,
+                                                    left: 0,
+                                                    width: '100%',
+                                                    height: '100%',
+                                                    cursor: 'pointer',
+                                                    overflow: 'hidden',
+                                                    zIndex: 10,
+                                                    background: '#000',
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                }}
+                                                onClick={() => handleChapterPlay(chapter.chapterId)}
+                                            >
+                                                {/* Chapter title at top */}
+                                                <div style={{
+                                                    position: 'absolute',
+                                                    top: '12px',
+                                                    left: '12px',
+                                                    right: '12px',
+                                                    zIndex: 2,
+                                                }}>
+                                                    <p style={{
+                                                        color: 'rgba(255,255,255,0.6)',
+                                                        fontSize: '10px',
+                                                        fontWeight: 600,
+                                                        textTransform: 'uppercase',
+                                                        letterSpacing: '1px',
+                                                        marginBottom: '2px',
+                                                    }}>Chapter {index + 1}</p>
+                                                    <h3 style={{
+                                                        color: 'white',
+                                                        fontSize: '13px',
+                                                        fontWeight: 700,
+                                                        lineHeight: 1.3,
+                                                        textShadow: '0 1px 6px rgba(0,0,0,0.6)',
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap',
+                                                    }}>{chapter.chapterTitle}</h3>
+                                                </div>
+
+                                                {/* Centered Play Button */}
+                                                <div style={{
+                                                    position: 'absolute',
+                                                    top: '50%',
+                                                    left: '50%',
+                                                    transform: 'translate(-50%, -50%)',
+                                                    zIndex: 2,
+                                                    width: '48px',
+                                                    height: '48px',
+                                                    borderRadius: '50%',
+                                                    background: 'rgba(255, 0, 0, 0.9)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    boxShadow: '0 4px 16px rgba(255,0,0,0.3)',
+                                                    transition: 'transform 0.2s, background 0.2s',
+                                                }}
+                                                    onMouseEnter={(e) => {
+                                                        e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1.1)';
+                                                        e.currentTarget.style.background = 'rgba(255, 0, 0, 1)';
+                                                    }}
+                                                    onMouseLeave={(e) => {
+                                                        e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1)';
+                                                        e.currentTarget.style.background = 'rgba(255, 0, 0, 0.9)';
+                                                    }}
+                                                >
+                                                    <Play size={22} fill="white" color="white" style={{ marginLeft: '2px' }} />
+                                                </div>
+
+                                                {/* Duration badge at bottom-right */}
+                                                {chapterDurations && (
+                                                    <div style={{
+                                                        position: 'absolute',
+                                                        bottom: '8px',
+                                                        right: '8px',
+                                                        zIndex: 2,
+                                                        background: 'rgba(0,0,0,0.8)',
+                                                        color: 'white',
+                                                        padding: '2px 6px',
+                                                        borderRadius: '3px',
+                                                        fontSize: '11px',
+                                                        fontWeight: 600,
+                                                        fontFamily: 'monospace',
+                                                    }}>
+                                                        {formatTime(chapterSeconds)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            /* Actual Player */
+                                            <>
+                                                <Player
+                                                    ref={pRef}
+                                                    component={CourseComposition}
+                                                    durationInFrames={totalFrames}
+                                                    compositionWidth={1280}
+                                                    compositionHeight={720}
+                                                    fps={fps}
+                                                    style={{
+                                                        width: '100%',
+                                                        borderRadius: isFullscreen ? '0' : '8px 8px 0 0',
+                                                        flex: 1,
+                                                        minHeight: 0,
+                                                    }}
+                                                    inputProps={{
+                                                        slides: chapterSlides.map(slide => ({
+                                                            slideId: slide.slideId,
+                                                            html: slide.html,
+                                                            audioFileUrl: slide.audioUrl,
+                                                            revealData: slide.revealData,
+                                                            caption: slide.captions
+                                                        })),
+                                                        durationsBySlideId: chapterDurations?.slidesDurations || {}
+                                                    }}
+                                                />
+                                                <CustomPlayerControls
+                                                    playerRef={pRef}
+                                                    fps={fps}
+                                                    totalFrames={totalFrames}
+                                                    containerRef={cRef}
+                                                />
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </CardContent>
-
                         </Card>
                     );
                 })}
             </div>
-        </div>
+        </div >
     )
 }
 

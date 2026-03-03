@@ -3,7 +3,8 @@ import { openrouter } from "@/config/openrouter";
 import { sarvam } from "@/config/sarvam";
 import { chapterContentSlides, courseImages } from "@/config/schema";
 import { GENERATE_VIDEO_PROMPT } from "@/data/Prompt";
-import { put } from "@vercel/blob";
+import { putWithRotation } from "@/lib/blob";
+import { deleteSlidesContent, loadSlidesContent, saveSlidesContent } from "@/lib/content-cache";
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -11,12 +12,31 @@ import { NextRequest, NextResponse } from "next/server";
 // 🧪 TESTING MODE CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 const TESTING_MODE = true;  // ⚠️ SET TO false TO GENERATE ALL CHAPTERS
-const TEST_CHAPTER_INDEX = 0;  // Generate only this chapter (0 = first chapter)
+const TEST_CHAPTER_INDEX = 9;  // Generate only this chapter (0 = first chapter)
+const USE_CONTENT_CACHE = true;  // ⚠️ SET TO false TO FORCE LLM REGENERATION
 
 console.log('🧪 TESTING MODE:', TESTING_MODE ? 'ENABLED (Single Chapter Only)' : 'DISABLED (All Chapters)');
 if (TESTING_MODE) {
     console.log(`📌 Will only generate chapter at index: ${TEST_CHAPTER_INDEX}`);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📦 CONTENT CACHING CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+// When true:  LLM-generated slide content is cached in Vercel Blob.
+//             On re-runs, cached content is reused (no LLM call).
+//             This saves LLM costs when retrying after Sarvam/Blob errors.
+// When false: Cache is deleted, LLM always regenerates fresh content.
+ // ⚠️ SET TO false TO FORCE LLM REGENERATION
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔄 RETRY CONFIGURATION (Round-Robin for failed slides)
+// ═══════════════════════════════════════════════════════════════════════════════
+const MAX_SLIDE_RETRIES = 3;     // Max retry rounds for failed slides
+const RETRY_DELAY_MS = 2000;     // Delay between retry rounds (ms)
+
+console.log('📦 CONTENT CACHE:', USE_CONTENT_CACHE ? 'ENABLED' : 'DISABLED');
+console.log(`🔄 MAX RETRIES: ${MAX_SLIDE_RETRIES} rounds`);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUDIO UTILITIES: WAV Merging
@@ -77,6 +97,19 @@ function mergeWavFiles(audioBuffers: Buffer[]): Buffer {
 
     console.log(`✅ Merged successfully: ${audioBuffers.length} chunks → ${mergedBuffer.length} bytes`);
     return mergedBuffer;
+}
+
+/**
+ * Compute duration (in seconds) from a WAV buffer using its header.
+ * This avoids fetching/decoding the audio file on the frontend.
+ */
+function getWavDurationFromBuffer(buffer: Buffer): number {
+    if (buffer.length < 44) return 0;
+    const header = parseWavHeader(buffer);
+    if (!header) return 0;
+    const dataSize = buffer.length - 44;
+    const bytesPerSecond = header.sampleRate * header.numChannels * (header.bitsPerSample / 8);
+    return bytesPerSecond > 0 ? dataSize / bytesPerSecond : 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -403,145 +436,197 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // Generate Slides with OpenRouter
-        console.log('🤖 Generating slides with OpenRouter...');
-        console.log('📝 Chapter content length:', JSON.stringify(chapter).length, 'chars');
-
+        // ═══════════════════════════════════════════════════════════════════
+        // CONTENT CACHING: Check for cached LLM content
+        // ═══════════════════════════════════════════════════════════════════
         let slidesData;
         let usedModel = 'unknown';
-        try {
-            let result;
-            const fallbackModels = [
-                'arcee-ai/trinity-large-preview:free',
-                'google/gemini-2.5-flash-preview-05-20',
-                'meta-llama/llama-4-maverick:free'
-            ];
+        let contentFromCache = false;
 
-            let lastError: any = null;
-            for (const model of fallbackModels) {
-                try {
-                    console.log(`🎯 Attempting with ${model}...`);
-                    result = await openrouter.json(
-                        GENERATE_VIDEO_PROMPT,
-                        JSON.stringify(chapter),
-                        {
-                            model: model,
-                            temperature: 0.7,
-                            maxTokens: 16000
-                        }
-                    );
-                    usedModel = model;
-                    break;
-                } catch (modelError: any) {
-                    console.warn(`⚠️ ${model} failed: ${modelError.message}`);
-                    lastError = modelError;
-                }
+        if (USE_CONTENT_CACHE) {
+            // Try to load cached content first
+            const cachedSlides = await loadSlidesContent(courseId, chapter.chapterId);
+            if (cachedSlides) {
+                console.log(`📦 Using cached content for chapter: ${chapter.chapterId}`);
+                console.log(`📦 Cached slides count: ${cachedSlides.length}`);
+                slidesData = cachedSlides;
+                usedModel = 'cached';
+                contentFromCache = true;
             }
+        } else {
+            // Flag is false: delete any stale cache before regenerating
+            console.log(`🗑️ Content cache disabled — deleting old cache for: ${chapter.chapterId}`);
+            await deleteSlidesContent(courseId, chapter.chapterId);
+        }
 
-            if (!result) {
-                throw lastError || new Error('All models failed');
-            }
+        // Generate fresh content if no cache was loaded
+        if (!slidesData) {
+            // Generate Slides with OpenRouter
+            console.log('🤖 Generating slides with OpenRouter...');
+            console.log('📝 Chapter content length:', JSON.stringify(chapter).length, 'chars');
 
-            console.log('✅ OpenRouter response received');
-            console.log('📊 Response type:', typeof result);
-            console.log('📊 Response keys:', Object.keys(result || {}));
+            try {
+                let result;
+                const fallbackModels = [
+                    'arcee-ai/trinity-large-preview:free',
+                    'deepseek/deepseek-chat-v3-0324:free',
+                    'meta-llama/llama-4-scout:free'
+                ];
 
-            // Handle response format
-            if (Array.isArray(result)) {
-                slidesData = result;
-            } else if (result?.slides && Array.isArray(result.slides)) {
-                slidesData = result.slides;
-            } else if (result?.data && Array.isArray(result.data)) {
-                slidesData = result.data;
-            } else if (typeof result === 'object' && result !== null) {
-                const arrays = Object.values(result).filter(v => Array.isArray(v));
-                if (arrays.length > 0) {
-                    slidesData = arrays[0];
-                } else {
-                    slidesData = [result];
-                }
-            } else {
-                console.error('❌ Unexpected response format:', result);
-                throw new Error('Invalid response format from OpenRouter');
-            }
-
-            console.log(`📊 Processing ${slidesData.length} slides`);
-
-            // Fetch pre-generated DeAPI images for this course
-            console.log('🖼️  Fetching pre-generated DeAPI images...');
-            const allImages = await db
-                .select()
-                .from(courseImages)
-                .where(eq(courseImages.courseId, courseId));
-
-            // Sort by imageIndex for consistent ordering
-            allImages.sort((a, b) => a.imageIndex - b.imageIndex);
-
-            console.log(`🖼️  Found ${allImages.length} total images for course`);
-
-            // Replace {{IMAGE_PLACEHOLDER}} in each slide's HTML with UNIQUE image URLs
-            if (allImages.length > 0) {
-                // Use chapterIndex offset so different chapters use different images
-                const chapterOffset = chapterIndex * slidesData.length;
-
-                for (let idx = 0; idx < slidesData.length; idx++) {
-                    if (slidesData[idx].html) {
-                        // Count how many {{IMAGE_PLACEHOLDER}} are in this slide
-                        const placeholderCount = (slidesData[idx].html.match(/\{\{IMAGE_PLACEHOLDER\}\}/g) || []).length;
-
-                        if (placeholderCount > 0) {
-                            // Replace each placeholder with a unique image
-                            let placeholderIndex = 0;
-                            slidesData[idx].html = slidesData[idx].html.replace(
-                                /\{\{IMAGE_PLACEHOLDER\}\}/g,
-                                () => {
-                                    // Unique image per slide: chapter offset + slide index + placeholder index
-                                    const imgOffset = (chapterOffset + idx + placeholderIndex) % allImages.length;
-                                    const imageUrl = allImages[imgOffset].imageUrl;
-                                    placeholderIndex++;
-                                    return imageUrl;
-                                }
-                            );
-                            console.log(`🖼️  Slide ${idx + 1}: Injected ${placeholderCount} unique DeAPI image(s)`);
-                        }
+                let lastError: any = null;
+                for (const model of fallbackModels) {
+                    try {
+                        console.log(`🎯 Attempting with ${model}...`);
+                        result = await openrouter.json(
+                            GENERATE_VIDEO_PROMPT,
+                            JSON.stringify(chapter),
+                            {
+                                model: model,
+                                temperature: 0.7,
+                                maxTokens: 65536
+                            }
+                        );
+                        usedModel = model;
+                        break;
+                    } catch (modelError: any) {
+                        console.warn(`⚠️ ${model} failed: ${modelError.message}`);
+                        lastError = modelError;
                     }
                 }
-            } else {
-                console.warn('⚠️ No DeAPI images found — {{IMAGE_PLACEHOLDER}} will remain in HTML');
-            }
 
-        } catch (error: any) {
-            console.error('❌ OpenRouter generation failed:', error.message);
-            console.error('Stack trace:', error.stack);
-            return NextResponse.json(
-                {
-                    success: false,
-                    error: 'Failed to generate slides',
-                    details: error.message,
-                    suggestion: 'Check the console logs for detailed error information'
-                },
-                { status: 500 }
-            );
+                if (!result) {
+                    throw lastError || new Error('All models failed');
+                }
+
+                console.log('✅ OpenRouter response received');
+                console.log('📊 Response type:', typeof result);
+                console.log('📊 Response keys:', Object.keys(result || {}));
+
+                // Handle response format
+                if (Array.isArray(result)) {
+                    slidesData = result;
+                } else if (result?.slides && Array.isArray(result.slides)) {
+                    slidesData = result.slides;
+                } else if (result?.data && Array.isArray(result.data)) {
+                    slidesData = result.data;
+                } else if (typeof result === 'object' && result !== null) {
+                    const arrays = Object.values(result).filter(v => Array.isArray(v));
+                    if (arrays.length > 0) {
+                        slidesData = arrays[0];
+                    } else {
+                        slidesData = [result];
+                    }
+                } else {
+                    console.error('❌ Unexpected response format:', result);
+                    throw new Error('Invalid response format from OpenRouter');
+                }
+
+                console.log(`📊 Generated ${slidesData.length} slides from LLM`);
+
+                // ═══════════════════════════════════════════════════════════
+                // CACHE: Save freshly generated content
+                // ═══════════════════════════════════════════════════════════
+                if (USE_CONTENT_CACHE) {
+                    await saveSlidesContent(courseId, chapter.chapterId, slidesData);
+                }
+
+            } catch (error: any) {
+                console.error('❌ OpenRouter generation failed:', error.message);
+                console.error('Stack trace:', error.stack);
+                return NextResponse.json(
+                    {
+                        success: false,
+                        error: 'Failed to generate slides',
+                        details: error.message,
+                        suggestion: 'Check the console logs for detailed error information'
+                    },
+                    { status: 500 }
+                );
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // IMAGE INJECTION: Replace {{IMAGE_PLACEHOLDER}} with real URLs
+        // ═══════════════════════════════════════════════════════════════════
+        console.log('🖼️  Fetching pre-generated DeAPI images...');
+        const allImages = await db
+            .select()
+            .from(courseImages)
+            .where(eq(courseImages.courseId, courseId));
+
+        // Sort by imageIndex for consistent ordering
+        allImages.sort((a, b) => a.imageIndex - b.imageIndex);
+
+        console.log(`🖼️  Found ${allImages.length} total images for course`);
+
+        // Replace {{IMAGE_PLACEHOLDER}} in each slide's HTML with UNIQUE image URLs
+        if (allImages.length > 0) {
+            // Use chapterIndex offset so different chapters use different images
+            const chapterOffset = chapterIndex * slidesData.length;
+
+            for (let idx = 0; idx < slidesData.length; idx++) {
+                if (slidesData[idx].html) {
+                    // Count how many {{IMAGE_PLACEHOLDER}} are in this slide
+                    const placeholderCount = (slidesData[idx].html.match(/\{\{IMAGE_PLACEHOLDER\}\}/g) || []).length;
+
+                    if (placeholderCount > 0) {
+                        // Replace each placeholder with a unique image
+                        let placeholderIndex = 0;
+                        slidesData[idx].html = slidesData[idx].html.replace(
+                            /\{\{IMAGE_PLACEHOLDER\}\}/g,
+                            () => {
+                                // Unique image per slide: chapter offset + slide index + placeholder index
+                                const imgOffset = (chapterOffset + idx + placeholderIndex) % allImages.length;
+                                const imageUrl = allImages[imgOffset].imageUrl;
+                                placeholderIndex++;
+                                return imageUrl;
+                            }
+                        );
+                        console.log(`🖼️  Slide ${idx + 1}: Injected ${placeholderCount} unique DeAPI image(s)`);
+                    }
+                }
+            }
+        } else {
+            console.warn('⚠️ No DeAPI images found — {{IMAGE_PLACEHOLDER}} will remain in HTML');
         }
 
         if (!slidesData || slidesData.length === 0) {
             throw new Error('No slides generated');
         }
 
-        // Process Each Slide
-        const insertedSlides = [];
+        // ═══════════════════════════════════════════════════════════════════
+        // SLIDE PROCESSING WITH RETRY (ROUND-ROBIN)
+        // ═══════════════════════════════════════════════════════════════════
+        // Process all slides. Failed slides are collected and retried in
+        // subsequent rounds (up to MAX_SLIDE_RETRIES) until all succeed.
+        // ═══════════════════════════════════════════════════════════════════
 
+        const insertedSlides: any[] = [];
+        const succeededIndices = new Set<number>();
+
+        // Build initial list of slide indices to process
+        let pendingIndices: number[] = [];
         for (let i = 0; i < slidesData.length; i++) {
+            pendingIndices.push(i);
+        }
+
+        /**
+         * Process a single slide: TTS → Blob upload → STT captions → DB save
+         * Returns true on success, false on failure.
+         */
+        const processSlide = async (i: number, round: number): Promise<boolean> => {
             const slide = slidesData[i];
+            const roundLabel = round > 0 ? ` [Retry round ${round}]` : '';
 
             console.log(`\n${'─'.repeat(80)}`);
-            console.log(`🎬 Slide ${i + 1}/${slidesData.length}: ${slide.slideId || `slide-${i}`}`);
+            console.log(`🎬 Slide ${i + 1}/${slidesData.length}: ${slide.slideId || `slide-${i}`}${roundLabel}`);
             console.log(`${'─'.repeat(80)}`);
 
             // Validate slide
             if (!slide.narration?.fullText) {
-                console.warn(`⚠️ Missing narration, skipping...`);
-                continue;
+                console.warn(`⚠️ Missing narration, skipping permanently...`);
+                succeededIndices.add(i); // Don't retry invalid slides
+                return true;
             }
 
             const narration = slide.narration.fullText;
@@ -554,53 +639,127 @@ export async function POST(req: NextRequest) {
                 // Step 1: Generate Audio (with chunking)
                 console.log('🔊 Step 1: Generating audio...');
                 const audioBuffer = await generateAudioForLongText(narration);
-                console.log(`✅ Audio generated: ${audioBuffer.length} bytes`);
+                const audioDuration = getWavDurationFromBuffer(audioBuffer);
+                console.log(`✅ Audio generated: ${audioBuffer.length} bytes, duration: ${audioDuration.toFixed(2)}s`);
 
                 // Step 2: Upload to Vercel Blob
                 console.log('☁️ Step 2: Uploading to Vercel Blob...');
                 const filename = `audio/${courseId}/${chapter.chapterId}/${slide.slideId || `slide-${i}`}.wav`;
-                const { url } = await put(filename, audioBuffer, {
+                const { url } = await putWithRotation(filename, audioBuffer, {
                     access: 'public',
                     contentType: 'audio/wav',
                     allowOverwrite: true
                 });
                 console.log(`✅ Uploaded: ${url}`);
 
-                // Step 3: Generate Captions with Sarvam AI (Replaces ElevenLabs)
+                // Step 3: Generate Captions with Sarvam AI
                 console.log('🎬 Step 3: Generating captions with Sarvam AI...');
                 const captions = await generateCaptions(url);
                 console.log(`✅ Captions: ${captions.chunks.length} chunks`);
 
-                // Step 4: Save to Database
+                // Step 4: Save to Database (upsert — handles retries gracefully)
                 console.log('💾 Step 4: Saving to database...');
-                const [insertedSlide] = await db.insert(chapterContentSlides).values({
+                const slideIdValue = slide.slideId || `slide-${i}`;
+                const slideValues = {
                     courseId: courseId,
                     chapterId: chapter.chapterId,
-                    slideId: slide.slideId || `slide-${i}`,
+                    slideId: slideIdValue,
                     slideIndex: slide.slideIndex || i,
                     audioUrl: url,
+                    audioDuration: audioDuration,
                     narration: slide.narration,
                     captions: captions,
                     html: slide.html,
-                    revealData: slide.revealData || []
-                }).returning();
+                    revealData: slide.fragmentData || slide.revealData || []
+                };
+
+                const [insertedSlide] = await db.insert(chapterContentSlides)
+                    .values(slideValues)
+                    .onConflictDoUpdate({
+                        target: chapterContentSlides.slideId,
+                        set: {
+                            audioUrl: url,
+                            audioDuration: audioDuration,
+                            narration: slide.narration,
+                            captions: captions,
+                            html: slide.html,
+                            revealData: slide.fragmentData || slide.revealData || [],
+                            slideIndex: slide.slideIndex || i,
+                        }
+                    })
+                    .returning();
 
                 insertedSlides.push(insertedSlide);
-                console.log(`✅ Slide ${i + 1} saved!`);
+                console.log(`✅ Slide ${i + 1} saved! (slideId: ${slideIdValue})`);
+                return true;
 
             } catch (error: any) {
                 console.error(`❌ Error processing slide ${i + 1}:`, error.message);
+                if (error.code) console.error('   PG Error Code:', error.code);
+                if (error.detail) console.error('   PG Detail:', error.detail);
+                if (error.constraint) console.error('   PG Constraint:', error.constraint);
                 console.error('Stack:', error.stack);
-
-                // Continue with next slide instead of failing entire batch
-                console.log('⏭️ Continuing to next slide...');
-                continue;
+                return false;
             }
         }
 
-        // Summary
+        // ─────────────────────────────────────────────────────────────────
+        // ROUND 0: Initial pass — process all slides
+        // ─────────────────────────────────────────────────────────────────
+        console.log(`\n${'═'.repeat(80)}`);
+        console.log(`🎬 Processing ${pendingIndices.length} slides (initial pass)`);
+        console.log(`${'═'.repeat(80)}`);
+
+        let failedIndices: number[] = [];
+        for (const idx of pendingIndices) {
+            const success = await processSlide(idx, 0);
+            if (success) {
+                succeededIndices.add(idx);
+            } else {
+                failedIndices.push(idx);
+                console.log('⏭️ Will retry this slide later...');
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // RETRY ROUNDS: Round-robin for failed slides
+        // ─────────────────────────────────────────────────────────────────
+        for (let round = 1; round <= MAX_SLIDE_RETRIES && failedIndices.length > 0; round++) {
+            console.log(`\n${'═'.repeat(80)}`);
+            console.log(`🔄 Retry round ${round}/${MAX_SLIDE_RETRIES}: retrying ${failedIndices.length} failed slide(s)`);
+            console.log(`   Failed slide indices: [${failedIndices.join(', ')}]`);
+            console.log(`${'═'.repeat(80)}`);
+
+            // Wait before retrying (give external services time to recover)
+            console.log(`⏳ Waiting ${RETRY_DELAY_MS}ms before retry...`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+
+            const stillFailed: number[] = [];
+            for (const idx of failedIndices) {
+                const success = await processSlide(idx, round);
+                if (success) {
+                    succeededIndices.add(idx);
+                    console.log(`✅ Slide ${idx + 1} succeeded on retry round ${round}!`);
+                } else {
+                    stillFailed.push(idx);
+                    console.log(`❌ Slide ${idx + 1} still failing (round ${round}/${MAX_SLIDE_RETRIES})`);
+                }
+            }
+
+            failedIndices = stillFailed;
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // FINAL SUMMARY
+        // ─────────────────────────────────────────────────────────────────
         console.log('\n' + '═'.repeat(80));
-        console.log(`🎉 SUCCESS: Generated ${insertedSlides.length}/${slidesData.length} slides`);
+        console.log(`🎉 RESULT: Generated ${insertedSlides.length}/${slidesData.length} slides`);
+        if (failedIndices.length > 0) {
+            console.log(`⚠️ ${failedIndices.length} slide(s) still failed after ${MAX_SLIDE_RETRIES} retries: [${failedIndices.join(', ')}]`);
+        } else {
+            console.log(`✅ ALL slides generated successfully!`);
+        }
+        console.log(`📦 Content source: ${contentFromCache ? 'cached' : 'fresh LLM generation'}`);
         console.log('═'.repeat(80) + '\n');
 
         return NextResponse.json({
@@ -615,6 +774,10 @@ export async function POST(req: NextRequest) {
                 chapterId: chapter.chapterId,
                 totalSlides: insertedSlides.length,
                 requestedSlides: slidesData.length,
+                failedSlides: failedIndices.length,
+                retriesUsed: failedIndices.length > 0 ? MAX_SLIDE_RETRIES : (insertedSlides.length < slidesData.length ? 'some' : 0),
+                contentFromCache,
+                contentCacheEnabled: USE_CONTENT_CACHE,
                 testingMode: TESTING_MODE
             }
         });

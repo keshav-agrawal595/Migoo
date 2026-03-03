@@ -19,23 +19,130 @@ type Slide = {
   slideId: string;
   html: string;
   audioFileUrl: string;
-  revealData?: string[];
+  revealData?: string[];    // legacy support (string IDs like "r1", "r2")
+  fragmentData?: number[];  // new fragment indices
   caption?: {
     chunks: CaptionChunk[];
   };
 };
 
-/* --------------------- Reveal runtime (iframe side) --------------------- */
+/* ---------------------- Auto-Scale Script (iframe) ---------------------- */
 
-const REVEAL_RUNTIME_SCRIPT = `
+/**
+ * Inline script that auto-scales slide content to fit 1280×720.
+ * Measures natural content size, then applies CSS transform scale + translate.
+ */
+const AUTO_SCALE_SCRIPT = `
+<script>
+(function() {
+  var VIEWPORT_W = 1280;
+  var VIEWPORT_H = 720;
+  var MIN_SCALE = 0.25;
+  var MAX_SCALE = 1.5;
+  var lastScale = -1;
+
+  function getWrapper() {
+    var children = document.body.children;
+    for (var i = 0; i < children.length; i++) {
+      if (children[i].tagName === 'DIV') return children[i];
+    }
+    return children[0];
+  }
+
+  function applyScale() {
+    var wrapper = getWrapper();
+    if (!wrapper) return;
+
+    // Reset transform for measurement
+    wrapper.style.transform = 'none';
+    wrapper.style.width = VIEWPORT_W + 'px';
+    wrapper.style.minHeight = '0';
+    wrapper.style.height = 'auto';
+    wrapper.style.overflow = 'visible';
+    wrapper.style.position = 'relative';
+
+    void wrapper.offsetHeight;
+
+    var naturalH = wrapper.scrollHeight;
+    var naturalW = wrapper.scrollWidth;
+
+    var scaleY = VIEWPORT_H / Math.max(naturalH, 1);
+    var scaleX = VIEWPORT_W / Math.max(naturalW, 1);
+    var scale = Math.min(scaleX, scaleY);
+    scale = Math.min(scale, MAX_SCALE);
+    scale = Math.max(scale, MIN_SCALE);
+
+    if (Math.abs(scale - lastScale) < 0.002) return;
+    lastScale = scale;
+
+    var scaledH = naturalH * scale;
+    var offsetY = Math.max(0, (VIEWPORT_H - scaledH) / 2);
+    var scaledW = naturalW * scale;
+    var offsetX = Math.max(0, (VIEWPORT_W - scaledW) / 2);
+
+    wrapper.style.transformOrigin = 'top left';
+    wrapper.style.transform = 'translate(' + offsetX + 'px, ' + offsetY + 'px) scale(' + scale + ')';
+    wrapper.style.width = VIEWPORT_W + 'px';
+    wrapper.style.height = naturalH + 'px';
+    wrapper.style.overflow = 'visible';
+  }
+
+  // Observe DOM changes
+  var observer = new MutationObserver(function() {
+    lastScale = -1;
+    requestAnimationFrame(applyScale);
+  });
+
+  function init() {
+    var wrapper = getWrapper();
+    if (wrapper) {
+      observer.observe(wrapper, { childList: true, subtree: true, attributes: true });
+    }
+    applyScale();
+  }
+
+  // Re-scale when images load
+  document.addEventListener('load', function(e) {
+    if (e.target && e.target.tagName === 'IMG') {
+      lastScale = -1;
+      requestAnimationFrame(applyScale);
+    }
+  }, true);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  window.addEventListener('load', function() {
+    lastScale = -1;
+    applyScale();
+  });
+})();
+</script>
+`;
+
+/* ---------------------- Fragment Runtime (iframe) ---------------------- */
+
+/**
+ * Unified fragment system — handles BOTH old (data-reveal="r1") and
+ * new (data-fragment-index="0") attributes.
+ *
+ * Old slides: class='reveal' data-reveal='r1' → toggled via REVEAL messages
+ * New slides: class='fragment' data-fragment-index='0' → toggled via NAVIGATE_FRAGMENT
+ *
+ * All elements start hidden and are shown progressively.
+ */
+const FRAGMENT_RUNTIME_SCRIPT = `
 <script>
 (function () {
-  let revealedIds = new Set();
-  
-  function reset() {
+  // ---------- LEGACY REVEAL SUPPORT (data-reveal="r1", "r2", ...) ----------
+  var revealedIds = new Set();
+
+  function resetReveals() {
     revealedIds.clear();
-    document.querySelectorAll(".reveal").forEach(el => {
-      // Keep r1 (heading) always active
+    document.querySelectorAll("[data-reveal]").forEach(function(el) {
       if (el.getAttribute("data-reveal") === "r1") {
         el.classList.add("active");
       } else {
@@ -44,126 +151,232 @@ const REVEAL_RUNTIME_SCRIPT = `
     });
   }
 
-  function reveal(id) {
-    if (revealedIds.has(id)) return; // Already revealed
-    
+  function revealById(id) {
+    if (revealedIds.has(id)) return;
     revealedIds.add(id);
-    const el = document.querySelector("[data-reveal='" + id + "']");
+    var el = document.querySelector("[data-reveal='" + id + "']");
+    if (el) el.classList.add("active");
+  }
+
+  function revealByIdImmediate(id) {
+    if (revealedIds.has(id)) return;
+    revealedIds.add(id);
+    var el = document.querySelector("[data-reveal='" + id + "']");
     if (el) {
+      el.style.transition = "none";
       el.classList.add("active");
+      void el.offsetWidth;
+      requestAnimationFrame(function() {
+        setTimeout(function() { el.style.transition = ""; }, 50);
+      });
     }
   }
 
-  function revealImmediate(id) {
-    const el = document.querySelector("[data-reveal='" + id + "']");
-    if (el) {
-      el.classList.add("active");
-      el.style.transition = "none"; // No animation for immediate reveals
-      setTimeout(() => {
-        el.style.transition = ""; // Restore transitions
-      }, 10);
-    }
+  // ---------- NEW FRAGMENT SUPPORT (data-fragment-index="0", "1", ...) ----------
+  function navigateFragment(targetIndex) {
+    var fragments = document.querySelectorAll("[data-fragment-index]");
+    fragments.forEach(function(el) {
+      var idx = parseInt(el.getAttribute("data-fragment-index"), 10);
+      if (idx <= targetIndex) {
+        el.classList.add("visible", "current-fragment");
+        el.style.opacity = "1";
+        el.style.transform = "none";
+      } else {
+        el.classList.remove("visible", "current-fragment");
+        el.style.opacity = "";
+        el.style.transform = "";
+      }
+    });
   }
 
+  function showAllFragments() {
+    document.querySelectorAll("[data-fragment-index]").forEach(function(f) {
+      f.classList.add("visible");
+      f.style.opacity = "1";
+      f.style.transform = "none";
+    });
+    document.querySelectorAll("[data-reveal]").forEach(function(el) {
+      el.classList.add("active");
+    });
+  }
+
+  // ---------- MESSAGE HANDLER ----------
   window.addEventListener("message", function (e) {
-    const msg = e.data;
+    var msg = e.data;
     if (!msg || !msg.type) return;
-    
+
+    // Legacy messages
     if (msg.type === "RESET") {
-      reset();
+      resetReveals();
     } else if (msg.type === "REVEAL") {
-      reveal(msg.id);
+      revealById(msg.id);
     } else if (msg.type === "REVEAL_IMMEDIATE") {
-      revealImmediate(msg.id);
+      revealByIdImmediate(msg.id);
     } else if (msg.type === "REVEAL_MULTIPLE") {
-      msg.ids.forEach(id => reveal(id));
+      msg.ids.forEach(function(id) { revealById(id); });
+    } else if (msg.type === "REVEAL_MULTIPLE_IMMEDIATE") {
+      msg.ids.forEach(function(id) { revealByIdImmediate(id); });
+    }
+    // New fragment messages
+    else if (msg.type === "NAVIGATE_FRAGMENT") {
+      navigateFragment(msg.index);
+    } else if (msg.type === "SHOW_ALL_FRAGMENTS") {
+      showAllFragments();
+    } else if (msg.type === "RESET_FRAGMENTS") {
+      navigateFragment(-1);
     }
   });
-  
-  // Ensure r1 (heading) is always visible on load
+
+  // Ensure r1 heading is always visible on load (legacy)
   window.addEventListener("load", function() {
-    const r1 = document.querySelector("[data-reveal='r1']");
-    if (r1) {
-      r1.classList.add("active");
-    }
+    var r1 = document.querySelector("[data-reveal='r1']");
+    if (r1) r1.classList.add("active");
+    // Signal ready
+    window.parent.postMessage({ type: "REVEAL_READY" }, "*");
   });
 })();
 </script>
 `;
 
-const AUTO_SCALE_SCRIPT = `
-<script>
-(function() {
-  window.addEventListener('load', function() {
-    var wrapper = document.body.children[0];
-    if (!wrapper) return;
-    var contentHeight = wrapper.scrollHeight;
-    var viewportHeight = 720;
-    if (contentHeight > viewportHeight) {
-      var scale = viewportHeight / contentHeight;
-      scale = Math.max(scale, 0.65);
-      wrapper.style.transform = 'scale(' + scale + ')';
-      wrapper.style.transformOrigin = 'top center';
-      wrapper.style.height = (viewportHeight / scale) + 'px';
-    }
-  });
-})();
-</script>
-`;
+/* ---------------------- Inject Runtime into HTML ---------------------- */
 
-const injectRevealRuntime = (html: string) => {
-  let fullHtml = html;
+/**
+ * Build a clean HTML document from the LLM's slide HTML.
+ * Handles both old (data-reveal) and new (data-fragment-index) slide formats.
+ * NO CDN dependencies — everything is inlined.
+ */
+const injectRuntime = (html: string): string => {
+  let content = html;
 
-  // Add proper HTML structure
-  if (!fullHtml.includes('<!DOCTYPE')) {
-    fullHtml = '<!DOCTYPE html>\n' + fullHtml;
+  // Strip structural tags
+  content = content.replace(/<!DOCTYPE[^>]*>/gi, '');
+  content = content.replace(/<\/?html[^>]*>/gi, '');
+
+  // Extract <head> content
+  let headContent = '';
+  const headMatch = content.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+  if (headMatch) {
+    headContent = headMatch[1];
+    content = content.replace(/<head[^>]*>[\s\S]*?<\/head>/i, '');
   }
 
-  if (!fullHtml.includes('<html')) {
-    fullHtml = `<!DOCTYPE html>
+  // Extract body content
+  const bodyMatch = content.match(/<body([^>]*)>([\s\S]*)<\/body>/i);
+  let bodyAttrs = '';
+  if (bodyMatch) {
+    bodyAttrs = bodyMatch[1] || '';
+    content = bodyMatch[2];
+  } else {
+    content = content.replace(/<\/?body[^>]*>/gi, '');
+  }
+
+  // Remove any tailwind script tags (not needed)
+  content = content.replace(/<script[^>]*tailwindcss[^>]*><\/script>/gi, '');
+
+
+  const fullHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=1280, height=720">
+  ${headContent}
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { 
-      width: 1280px; 
-      height: 720px; 
-      overflow: hidden;
-      margin: 0;
-      padding: 0;
+
+    /* ---- HIDE SCROLLBAR APPEARANCE (cosmetic only) ---- */
+    *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    * { scrollbar-width: none; -ms-overflow-style: none; }
+
+    /* ---- LEGACY REVEAL SYSTEM (data-reveal) ---- */
+    [data-reveal] {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.7s cubic-bezier(0.4, 0, 0.2, 1),
+                  transform 0.7s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    /* Auto-scale wrapper for oversized content */
-    body > div:first-child {
-      transform-origin: top center;
-      width: 1280px;
-      max-height: 720px;
+    [data-reveal].active {
+      opacity: 1 !important;
+      transform: translateY(0) !important;
     }
+    [data-reveal]:nth-child(odd) { transition-delay: 0.1s; }
+    [data-reveal]:nth-child(even) { transition-delay: 0.2s; }
+
+    /* ---- NEW FRAGMENT SYSTEM (data-fragment-index) ---- */
+    [data-fragment-index] {
+      opacity: 0;
+      transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    [data-fragment-index].visible {
+      opacity: 1 !important;
+      transform: none !important;
+      filter: none !important;
+    }
+
+    /* Fragment style: fade-up (default) */
+    .fragment.fade-up, [data-fragment-index] {
+      transform: translateY(30px);
+    }
+
+    /* Fragment style: fade-down */
+    .fragment.fade-down {
+      transform: translateY(-30px);
+    }
+
+    /* Fragment style: fade-left */
+    .fragment.fade-left {
+      transform: translateX(40px);
+    }
+
+    /* Fragment style: fade-right */
+    .fragment.fade-right {
+      transform: translateX(-40px);
+    }
+
+    /* Fragment style: grow */
+    .fragment.grow {
+      transform: scale(0.7);
+    }
+
+    /* Fragment style: shrink */
+    .fragment.shrink {
+      transform: scale(1.2);
+    }
+
+    /* Fragment style: scale-in (custom) */
+    .fragment.scale-in {
+      transform: scale(0.5);
+    }
+
+    /* Fragment style: blur-in (custom) */
+    .fragment.blur-in {
+      filter: blur(8px);
+      transform: scale(0.95);
+    }
+
+    /* Fragment style: slide-up (custom) */
+    .fragment.slide-up {
+      transform: translateY(60px);
+    }
+
+    /* Fragment style: fade-in (just opacity) */
+    .fragment.fade-in {
+      transform: none;
+    }
+
+    /* Ensure images behave */
+    img { max-width: 100%; }
   </style>
 </head>
-${fullHtml}
+<body${bodyAttrs} style="margin:0; padding:0; width:1280px; height:720px; overflow:hidden;">
+  ${content}
+  ${AUTO_SCALE_SCRIPT}
+  ${FRAGMENT_RUNTIME_SCRIPT}
+</body>
 </html>`;
-  }
-
-  // Inject auto-scale before the reveal runtime
-  if (fullHtml.includes("</body>")) {
-    fullHtml = fullHtml.replace("</body>", AUTO_SCALE_SCRIPT + "</body>");
-  } else {
-    fullHtml += AUTO_SCALE_SCRIPT;
-  }
-
-  // Inject script
-  if (fullHtml.includes("</body>")) {
-    fullHtml = fullHtml.replace("</body>", `${REVEAL_RUNTIME_SCRIPT}</body>`);
-  } else {
-    fullHtml += REVEAL_RUNTIME_SCRIPT;
-  }
 
   return fullHtml;
 };
 
-/* ------------------------- Slide with reveal control ------------------------- */
+/* ------------------- Slide iframe with fragment control ------------------- */
 
 const SlideIFrameWithReveal = ({ slide }: { slide: Slide }) => {
   const frame = useCurrentFrame();
@@ -172,104 +385,107 @@ const SlideIFrameWithReveal = ({ slide }: { slide: Slide }) => {
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
-  const lastRevealedIndex = useRef(-1);
   const hasShownHeading = useRef(false);
 
-  // Calculate reveal plan with optimized timing for faster reveals
-  const revealPlan = useMemo(() => {
-    const ids = slide.revealData ?? [];
-    const chunks = slide.caption?.chunks ?? [];
+  // Detect which system this slide uses
+  const isLegacy = Boolean(slide.revealData?.length && typeof slide.revealData[0] === 'string' && String(slide.revealData[0]).startsWith('r'));
+  const isNewFragment = Boolean(slide.fragmentData?.length);
 
-    // If we have caption chunks, use those timestamps with faster timing
-    if (chunks.length > 0) {
+  // Build reveal/fragment plan from captions
+  const revealPlan = useMemo(() => {
+    if (isLegacy) {
+      // Legacy: use revealData string IDs
+      const ids = slide.revealData ?? [];
+      const chunks = slide.caption?.chunks ?? [];
+      if (ids.length === 0) return [];
+
       return ids.map((id, i) => {
-        // Use chunk timestamp with minimal offset for immediate sync
         const chunkTime = chunks[i]?.timestamp?.[0] ?? (i * 1.2);
-        // Reveal slightly earlier for better perceived sync (50ms)
-        return {
-          id,
-          at: Math.max(0, chunkTime - 0.05),
-        };
+        return { id, at: Math.max(0, chunkTime - 0.05) };
+      });
+    } else if (isNewFragment) {
+      // New: use fragmentData indices
+      const indices = slide.fragmentData ?? [];
+      const chunks = slide.caption?.chunks ?? [];
+      if (indices.length === 0) return [];
+
+      return indices.map((idx, i) => {
+        const chunkTime = chunks[i]?.timestamp?.[0] ?? (i * 1.2);
+        return { index: idx, at: Math.max(0, chunkTime - 0.05) };
+      });
+    } else {
+      // Fallback: check revealData with number arrays (from DB column)
+      const data = slide.revealData ?? [];
+      const chunks = slide.caption?.chunks ?? [];
+      if (data.length === 0) return [];
+
+      // Could be numbers stored as strings
+      const isNumeric = data.length > 0 && !isNaN(Number(data[0]));
+      if (isNumeric) {
+        return data.map((val, i) => {
+          const chunkTime = chunks[i]?.timestamp?.[0] ?? (i * 1.2);
+          return { index: Number(val), at: Math.max(0, chunkTime - 0.05) };
+        });
+      }
+
+      return data.map((id, i) => {
+        const chunkTime = chunks[i]?.timestamp?.[0] ?? (i * 1.2);
+        return { id: String(id), at: Math.max(0, chunkTime - 0.05) };
       });
     }
+  }, [slide.slideId, slide.revealData, slide.fragmentData, slide.caption]);
 
-    // Fallback: faster distribution (1.2s intervals instead of 1.5s)
-    const estimatedDuration = Math.max(8, ids.length * 1.2);
-    const interval = estimatedDuration / ids.length;
-
-    return ids.map((id, i) => ({
-      id,
-      at: i * interval,
-    }));
-  }, [slide.slideId, slide.revealData, slide.caption]);
+  // Listen for REVEAL_READY from iframe
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'REVEAL_READY') {
+        setReady(true);
+        hasShownHeading.current = false;
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   const handleLoad = () => {
-    setReady(true);
-    lastRevealedIndex.current = -1;
-    hasShownHeading.current = false;
-
-    // Reset and immediately show r1 (heading)
-    setTimeout(() => {
-      const win = iframeRef.current?.contentWindow;
-      if (win) {
-        win.postMessage({ type: "RESET" }, "*");
-        // Immediately reveal r1 (heading) with no animation
-        win.postMessage({ type: "REVEAL_IMMEDIATE", id: "r1" }, "*");
-        hasShownHeading.current = true;
-      }
-    }, 50);
+    // Also set ready on load as a fallback
+    setTimeout(() => setReady(true), 100);
   };
 
-  // Optimized reveal - faster updates with immediate heading
+  // Drive reveals/fragments based on current time
   useEffect(() => {
     if (!ready) return;
 
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
 
-    // Ensure heading is always visible
-    if (!hasShownHeading.current) {
-      win.postMessage({ type: "REVEAL_IMMEDIATE", id: "r1" }, "*");
-      hasShownHeading.current = true;
-    }
-
-    // Find which reveals should be active at current time
-    const revealIndices: number[] = [];
-    for (let i = 0; i < revealPlan.length; i++) {
-      if (time >= revealPlan[i].at) {
-        revealIndices.push(i);
-      }
-    }
-
-    const newHighestIndex = revealIndices.length > 0 ? Math.max(...revealIndices) : -1;
-
-    // If user scrubbed backward, reset and reveal all up to current time
-    if (newHighestIndex < lastRevealedIndex.current) {
-      win.postMessage({ type: "RESET" }, "*");
-
-      // Immediately show heading (r1)
-      win.postMessage({ type: "REVEAL_IMMEDIATE", id: "r1" }, "*");
-
-      // Then reveal other elements
-      const idsToReveal = revealIndices
-        .filter(i => revealPlan[i].id !== "r1") // Don't double-reveal r1
-        .map(i => revealPlan[i].id);
-
-      if (idsToReveal.length > 0) {
-        win.postMessage({ type: "REVEAL_MULTIPLE", ids: idsToReveal }, "*");
-      }
-      lastRevealedIndex.current = newHighestIndex;
-    }
-    // Otherwise just reveal new items (faster progression)
-    else if (newHighestIndex > lastRevealedIndex.current) {
-      for (let i = lastRevealedIndex.current + 1; i <= newHighestIndex; i++) {
-        const id = revealPlan[i].id;
-        // Skip r1 as it's already shown immediately
-        if (id !== "r1") {
-          win.postMessage({ type: "REVEAL", id }, "*");
+    if (isLegacy || (!isNewFragment && revealPlan.length > 0 && 'id' in revealPlan[0])) {
+      // LEGACY: send REVEAL messages with string IDs
+      for (const item of revealPlan) {
+        if ('id' in item && time >= item.at) {
+          if (!hasShownHeading.current && item.id === 'r1') {
+            win.postMessage({ type: "REVEAL_IMMEDIATE", id: "r1" }, "*");
+            hasShownHeading.current = true;
+          } else {
+            win.postMessage({ type: "REVEAL", id: item.id }, "*");
+          }
         }
       }
-      lastRevealedIndex.current = newHighestIndex;
+
+      // Ensure heading is always visible
+      if (!hasShownHeading.current) {
+        win.postMessage({ type: "REVEAL_IMMEDIATE", id: "r1" }, "*");
+        hasShownHeading.current = true;
+      }
+    } else {
+      // NEW FRAGMENT: send NAVIGATE_FRAGMENT with highest visible index
+      let targetIndex = -1;
+      for (const item of revealPlan) {
+        if ('index' in item && time >= item.at) {
+          targetIndex = item.index;
+        }
+      }
+      win.postMessage({ type: 'NAVIGATE_FRAGMENT', index: targetIndex }, '*');
     }
   }, [time, ready, revealPlan]);
 
@@ -277,7 +493,7 @@ const SlideIFrameWithReveal = ({ slide }: { slide: Slide }) => {
     <AbsoluteFill style={{ backgroundColor: "#000" }}>
       <iframe
         ref={iframeRef}
-        srcDoc={injectRevealRuntime(slide.html)}
+        srcDoc={injectRuntime(slide.html)}
         onLoad={handleLoad}
         sandbox="allow-scripts allow-same-origin"
         style={{
@@ -305,10 +521,9 @@ const SlideWithTransition = ({
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  // Faster fade in at start (12 frames = ~0.4s at 30fps)
   const fadeInDuration = 12;
   const opacity = isFirstSlide
-    ? 1 // First slide starts visible
+    ? 1
     : interpolate(
       frame,
       [0, fadeInDuration],
@@ -316,7 +531,6 @@ const SlideWithTransition = ({
       { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
     );
 
-  // Faster slide in from right with spring animation
   const slideSpring = spring({
     frame,
     fps,
@@ -352,7 +566,6 @@ type Props = {
 export const CourseComposition = ({ slides, durationsBySlideId }: Props) => {
   const { fps } = useVideoConfig();
 
-  // Faster transition duration between slides (10 frames = ~0.33s)
   const TRANSITION_FRAMES = 10;
 
   const timeline = useMemo(() => {
@@ -366,7 +579,6 @@ export const CourseComposition = ({ slides, durationsBySlideId }: Props) => {
         isFirstSlide: index === 0
       };
 
-      // Next slide starts a bit before this one ends for smooth transition
       from += dur - (index < slides.length - 1 ? TRANSITION_FRAMES : 0);
 
       return item;
