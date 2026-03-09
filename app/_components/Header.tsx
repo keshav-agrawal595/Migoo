@@ -14,6 +14,34 @@ function Header() {
         return null;
     }
 
+    // When signed in: minimal bar with logo + user avatar
+    if (isLoaded && isSignedIn) {
+        const isCourseDetailPage = /^\/course\/[^/]+/.test(pathname);
+
+        return (
+            <div className={`flex items-center justify-between px-4 py-2 ${isCourseDetailPage ? 'border-b shadow-sm bg-white' : ''}`}>
+                {/* Left: Logo (always visible) */}
+                <div className='flex gap-2 items-center'>
+                    <Link href="/">
+                        <Image src={'/logo.png'} alt='logo' width={90} height={90} />
+                    </Link>
+                </div>
+
+                {/* Center: Home link (course detail only) */}
+                {isCourseDetailPage && (
+                    <div className='flex gap-8 items-center'>
+                        <Link href="/" className='text-lg hover:text-primary transition-colors cursor-pointer'>Home</Link>
+                    </div>
+                )}
+
+                {/* Right: User Avatar */}
+                <div className='flex items-center ml-auto'>
+                    <UserButton afterSignOutUrl="/" />
+                </div>
+            </div>
+        )
+    }
+
     // Show loading state
     if (!isLoaded) {
         return (
@@ -26,6 +54,7 @@ function Header() {
         )
     }
 
+    // Not signed in: classic header
     return (
         <div className='flex items-center justify-between p-4 border-b shadow-sm bg-white'>
             {/* Left: Logo */}
@@ -41,14 +70,11 @@ function Header() {
 
             {/* Right: Auth Button */}
             <div className='flex items-center'>
-                {isSignedIn ?
-                    <UserButton afterSignOutUrl="/" /> :
-                    <Link href="/sign-in">
-                        <Button className="px-6 py-2 bg-primary hover:bg-primary/90">
-                            Get Started
-                        </Button>
-                    </Link>
-                }
+                <Link href="/sign-in">
+                    <Button className="px-6 py-2 bg-primary hover:bg-primary/90">
+                        Get Started
+                    </Button>
+                </Link>
             </div>
         </div>
     )

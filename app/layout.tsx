@@ -1,10 +1,12 @@
+import AppSidebar from '@/components/AppSidebar'
+import { ClerkProviderWrapper } from '@/components/auth/ClerkWrapper'
+import GradientBackground from '@/components/GradientBackground'
+import { Toaster } from '@/components/ui/sonner'
 import type { Metadata } from 'next'
 import { Outfit } from 'next/font/google'
-import { ClerkProviderWrapper } from '@/components/auth/ClerkWrapper'
+import Header from './_components/Header'
 import './globals.css'
 import Provider from './provider'
-import { Toaster } from '@/components/ui/sonner'
-import Header from './_components/Header' // IMPORT Header
 
 const outfit = Outfit({
   subsets: ['latin'],
@@ -30,11 +32,17 @@ export default function RootLayout({
       </head>
       <body className={`${outfit.className} antialiased`}>
         <ClerkProviderWrapper>
-          <Header /> {/* ADD Header here, outside Provider */}
-          <Provider>
-            {children}
-            <Toaster position='top-center' richColors />
-          </Provider>
+          <GradientBackground />
+          <Header />
+          <div className="flex min-h-screen relative z-10">
+            <AppSidebar />
+            <main className="flex-1 min-w-0">
+              <Provider>
+                {children}
+                <Toaster position='top-center' richColors />
+              </Provider>
+            </main>
+          </div>
         </ClerkProviderWrapper>
       </body>
     </html>

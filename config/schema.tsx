@@ -45,3 +45,38 @@ export const chapterContentSlides = pgTable("chapter_content_slides", {
     audioDuration: real("audio_duration"),
     createdAt: timestamp("created_at").defaultNow(),
 })
+
+// ── Short Video Series ──────────────────────────────────────
+export const shortVideoSeries = pgTable("short_video_series", {
+    id: integer().primaryKey().generatedAlwaysAsIdentity(),
+    seriesId: varchar({ length: 255 }).notNull().unique(),
+    userId: varchar({ length: 255 }).notNull().references(() => usersTable.email),
+
+    // Step 1: Niche
+    niche: varchar({ length: 500 }).notNull(),
+
+    // Step 2: Voice
+    language: varchar({ length: 20 }).notNull(),
+    voice: varchar({ length: 100 }).notNull(),
+
+    // Step 3: Music
+    music: varchar({ length: 100 }).notNull(),
+
+    // Step 4: Video Style
+    videoStyle: varchar("video_style", { length: 100 }).notNull(),
+
+    // Step 5: Caption Style
+    captionStyle: varchar("caption_style", { length: 100 }).notNull(),
+
+    // Step 6: Series Details
+    title: varchar({ length: 500 }).notNull(),
+    duration: varchar({ length: 20 }).notNull(),       // '30-50' or '60-70'
+    platform: varchar({ length: 50 }).notNull(),        // 'youtube' | 'instagram' | 'email'
+    publishTime: timestamp("publish_time").notNull(),
+
+    // Status tracking
+    status: varchar({ length: 50 }).default("pending"), // pending | generating | completed | failed
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+})
+
