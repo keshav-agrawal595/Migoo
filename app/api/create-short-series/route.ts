@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
             duration,
             platform,
             publishTime: new Date(publishTime),
-            status: 'pending',
+            status: 'active',
         }).returning();
 
         return NextResponse.json({ success: true, seriesId: result.seriesId });

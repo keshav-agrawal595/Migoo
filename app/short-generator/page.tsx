@@ -1,279 +1,448 @@
 "use client"
 import { useUser } from '@clerk/nextjs'
-import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, ArrowRight, Check, Loader2, Sparkles, Zap } from 'lucide-react'
+import { motion } from 'framer-motion'
+import {
+    Calendar,
+    Clapperboard,
+    Edit3,
+    Eye,
+    ImageIcon,
+    Loader2,
+    MoreVertical,
+    Pause,
+    Play,
+    Plus,
+    RefreshCw,
+    Sparkles,
+    Trash2,
+    Video,
+    Zap,
+} from 'lucide-react'
 import Image from 'next/image'
-import { useState } from 'react'
+import Link from 'next/link'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import SelectCaptionStyle from './_components/SelectCaptionStyle'
-import SelectMusic from './_components/SelectMusic'
-import SelectNiche from './_components/SelectNiche'
-import SelectVideoStyle from './_components/SelectVideoStyle'
-import SelectVoice from './_components/SelectVoice'
-import SeriesDetails from './_components/SeriesDetails'
 
-const steps = [
-    { id: 0, label: 'Niche', icon: '/short-generator-form-icons/niche.png' },
-    { id: 1, label: 'Voice', icon: '/short-generator-form-icons/voice.png' },
-    { id: 2, label: 'Music', icon: '/short-generator-form-icons/music.png' },
-    { id: 3, label: 'Style', icon: '/short-generator-form-icons/style.png' },
-    { id: 4, label: 'Captions', icon: '/short-generator-form-icons/caption.png' },
-    { id: 5, label: 'Details', icon: '/short-generator-form-icons/details.png' },
-]
+interface ShortSeries {
+    id: number
+    seriesId: string
+    userId: string
+    niche: string
+    language: string
+    voice: string
+    music: string
+    videoStyle: string
+    captionStyle: string
+    title: string
+    duration: string
+    platform: string
+    publishTime: string
+    thumbnailUrl: string | null
+    status: string | null
+    createdAt: string
+    updatedAt: string
+}
+
+type TabMode = 'new' | 'courses'
 
 function ShortGeneratorPage() {
     const { user } = useUser()
-    const [currentStep, setCurrentStep] = useState(0)
-    const [isGenerating, setIsGenerating] = useState(false)
+    const [activeTab, setActiveTab] = useState<TabMode>('new')
+    const [series, setSeries] = useState<ShortSeries[]>([])
+    const [loading, setLoading] = useState(true)
+    const [openPopover, setOpenPopover] = useState<string | null>(null)
+    const [deletingId, setDeletingId] = useState<string | null>(null)
+    const [generatingThumbnail, setGeneratingThumbnail] = useState<string | null>(null)
+    const attemptedThumbnails = useRef<Set<string>>(new Set())
+    const popoverRef = useRef<HTMLDivElement>(null)
 
-    // Form state
-    const [niche, setNiche] = useState('')
-    const [language, setLanguage] = useState('en-IN')
-    const [voice, setVoice] = useState('')
-    const [music, setMusic] = useState('')
-    const [videoStyle, setVideoStyle] = useState('')
-    const [captionStyle, setCaptionStyle] = useState('')
-    const [seriesData, setSeriesData] = useState({
-        title: '',
-        duration: '',
-        platform: '',
-        publishTime: '',
-    })
+    const userId = user?.primaryEmailAddress?.emailAddress
 
-    const canProceed = () => {
-        switch (currentStep) {
-            case 0: return !!niche && (niche.startsWith('custom:') ? niche.length > 7 : true)
-            case 1: return !!language && !!voice
-            case 2: return !!music
-            case 3: return !!videoStyle
-            case 4: return !!captionStyle
-            case 5: return !!seriesData.title && !!seriesData.duration && !!seriesData.platform && !!seriesData.publishTime
-            default: return false
-        }
-    }
-
-    const handleNext = () => {
-        if (!canProceed()) {
-            toast.error('Please make a selection before continuing')
-            return
-        }
-        if (currentStep < steps.length - 1) {
-            setCurrentStep(prev => prev + 1)
-        }
-    }
-
-    const handleBack = () => {
-        if (currentStep > 0) {
-            setCurrentStep(prev => prev - 1)
-        }
-    }
-
-    const handleGenerate = async () => {
-        if (!canProceed()) {
-            toast.error('Please fill in all required fields')
-            return
-        }
-
-        if (!user?.primaryEmailAddress?.emailAddress) {
-            toast.error('Please sign in to generate a series')
-            return
-        }
-
-        setIsGenerating(true)
-
+    // Fetch series
+    const fetchSeries = useCallback(async () => {
+        if (!userId) return
         try {
-            const response = await fetch('/api/create-short-series', {
+            const res = await fetch(`/api/short-series?userId=${encodeURIComponent(userId)}`)
+            const data = await res.json()
+            if (data.success) {
+                setSeries(data.series)
+            }
+        } catch (err) {
+            console.error('Failed to fetch series:', err)
+        } finally {
+            setLoading(false)
+        }
+    }, [userId])
+
+    useEffect(() => {
+        fetchSeries()
+    }, [fetchSeries])
+
+    // Manual thumbnail regeneration
+    const handleRegenThumbnail = async (s: ShortSeries) => {
+        setGeneratingThumbnail(s.seriesId)
+        try {
+            const res = await fetch('/api/short-series/generate-thumbnail', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    niche,
-                    language,
-                    voice,
-                    music,
-                    videoStyle,
-                    captionStyle,
-                    ...seriesData,
-                    userId: user.primaryEmailAddress.emailAddress,
-                }),
+                body: JSON.stringify({ seriesId: s.seriesId, title: s.title, niche: s.niche }),
             })
-
-            const data = await response.json()
-
-            if (!response.ok) {
-                throw new Error(data.error || 'Failed to save series')
+            const data = await res.json()
+            if (data.success && data.thumbnailUrl) {
+                setSeries(prev => prev.map(item =>
+                    item.seriesId === s.seriesId
+                        ? { ...item, thumbnailUrl: data.thumbnailUrl }
+                        : item
+                ))
+                toast.success('Thumbnail generated!')
+            } else {
+                toast.error('Thumbnail generation failed')
             }
-
-            toast.success('Series created successfully! 🎉')
-            console.log('📹 Series saved with ID:', data.seriesId)
-        } catch (error: any) {
-            console.error('Error creating series:', error)
-            toast.error(error.message || 'Something went wrong')
-        } finally {
-            setIsGenerating(false)
+        } catch {
+            toast.error('Thumbnail generation failed')
         }
+        setGeneratingThumbnail(null)
+    }
+
+    // Close popover on outside click
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+                setOpenPopover(null)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [])
+
+    // Pause/Resume
+    const handleToggleStatus = async (s: ShortSeries) => {
+        const newStatus = s.status === 'paused' ? 'active' : 'paused'
+        try {
+            const res = await fetch(`/api/short-series/${s.seriesId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus }),
+            })
+            const data = await res.json()
+            if (data.success) {
+                setSeries(prev => prev.map(item =>
+                    item.seriesId === s.seriesId ? { ...item, status: newStatus } : item
+                ))
+                toast.success(newStatus === 'paused' ? 'Series paused' : 'Series resumed')
+            }
+        } catch {
+            toast.error('Failed to update status')
+        }
+        setOpenPopover(null)
+    }
+
+    // Delete
+    const handleDelete = async (seriesId: string) => {
+        setDeletingId(seriesId)
+        try {
+            const res = await fetch(`/api/short-series/${seriesId}`, { method: 'DELETE' })
+            const data = await res.json()
+            if (data.success) {
+                setSeries(prev => prev.filter(item => item.seriesId !== seriesId))
+                toast.success('Series deleted')
+            }
+        } catch {
+            toast.error('Failed to delete series')
+        }
+        setDeletingId(null)
+        setOpenPopover(null)
+    }
+
+    // Generate videos (placeholder trigger)
+    const handleGenerate = async (s: ShortSeries) => {
+        toast.info(`Video generation for "${s.title}" coming soon!`)
+    }
+
+    const formatDate = (date: string) => {
+        return new Date(date).toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+        })
     }
 
     return (
-        <div className="max-w-5xl mx-auto px-4 py-8 md:py-12">
+        <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
             {/* Header */}
             <motion.div
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5 }}
                 className="text-center mb-8"
             >
                 <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-primary/10 to-accent/10 border border-primary/10 mb-4">
                     <Zap className="w-4 h-4 text-primary" />
-                    <span className="text-sm font-medium text-primary">Short Video Series Creator</span>
+                    <span className="text-sm font-medium text-primary">AI Short Video Generator</span>
                 </div>
                 <h1 className="text-3xl md:text-4xl font-bold">
-                    Create Your <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Short Series</span>
+                    Your <span className="bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">Short Series</span>
                 </h1>
-                <p className="text-muted-foreground mt-2">Configure your AI-generated short video series in a few steps</p>
             </motion.div>
 
-            {/* Progress Bar */}
-            <div className="mb-10">
-                <div className="flex items-center justify-between max-w-3xl mx-auto">
-                    {steps.map((step, index) => (
-                        <div key={step.id} className="flex items-center flex-1 last:flex-initial">
-                            <button
-                                onClick={() => {
-                                    // Allow jumping to completed steps
-                                    if (index <= currentStep) setCurrentStep(index)
-                                }}
-                                className={`
-                                    relative flex flex-col items-center gap-1 group
-                                ${index <= currentStep ? 'cursor-pointer' : 'cursor-default'}
-                                `}
-                            >
-                                <div className={`
-                                    w-10 h-10 rounded-full flex items-center justify-center text-lg
-                                    transition-all duration-300 border-2
-                                    ${index < currentStep
-                                        ? 'bg-primary border-primary text-white shadow-lg shadow-primary/25'
-                                        : index === currentStep
-                                            ? 'bg-gradient-to-br from-primary to-accent border-primary text-white shadow-lg shadow-primary/25 scale-110'
-                                            : 'bg-white/60 border-border/50 text-muted-foreground'
-                                    }
-                                `}>
-                                    {index < currentStep ? (
-                                        <Check className="w-4 h-4" />
-                                    ) : (
-                                        <Image src={step.icon} alt={step.label} width={20} height={20} className="object-contain" />
-                                    )}
-                                </div>
-                                <span className={`
-                                    text-[10px] font-medium hidden sm:block
-                                    ${index <= currentStep ? 'text-primary' : 'text-muted-foreground'}
-                                `}>
-                                    {step.label}
-                                </span>
-                            </button>
-
-                            {/* Connector line */}
-                            {index < steps.length - 1 && (
-                                <div className="flex-1 h-0.5 mx-2 rounded-full overflow-hidden bg-border/30">
-                                    <motion.div
-                                        className="h-full bg-gradient-to-r from-primary to-accent rounded-full"
-                                        initial={{ width: '0%' }}
-                                        animate={{ width: index < currentStep ? '100%' : '0%' }}
-                                        transition={{ duration: 0.4, ease: 'easeOut' }}
-                                    />
-                                </div>
-                            )}
-                        </div>
-                    ))}
+            {/* Toggle + Create Button Bar */}
+            <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+                className="flex items-center justify-between mb-8"
+            >
+                {/* Toggle */}
+                <div className="flex items-center bg-muted/60 rounded-xl p-1 border border-border/40">
+                    <button
+                        onClick={() => setActiveTab('new')}
+                        className={`
+                            flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer
+                            ${activeTab === 'new'
+                                ? 'bg-white shadow-sm text-foreground border border-border/50'
+                                : 'text-muted-foreground hover:text-foreground'
+                            }
+                        `}
+                    >
+                        <Clapperboard className="w-4 h-4" />
+                        New Series
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('courses')}
+                        className={`
+                            flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer relative
+                            ${activeTab === 'courses'
+                                ? 'bg-white shadow-sm text-foreground border border-border/50'
+                                : 'text-muted-foreground hover:text-foreground'
+                            }
+                        `}
+                    >
+                        <Video className="w-4 h-4" />
+                        From Courses
+                        <span className="text-[9px] font-bold uppercase tracking-wider bg-gradient-to-r from-secondary/20 to-secondary/10 text-secondary px-1.5 py-0.5 rounded-full border border-secondary/20">
+                            Soon
+                        </span>
+                    </button>
                 </div>
-            </div>
 
-            {/* Step Content */}
-            <div className="min-h-[400px]">
-                <AnimatePresence mode="wait">
-                    <motion.div
-                        key={currentStep}
-                        initial={{ opacity: 0, x: 40 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -40 }}
-                        transition={{ duration: 0.3, ease: 'easeOut' }}
-                    >
-                        {currentStep === 0 && <SelectNiche selected={niche} onSelect={setNiche} />}
-                        {currentStep === 1 && (
-                            <SelectVoice
-                                selectedLanguage={language}
-                                selectedVoice={voice}
-                                onSelectLanguage={setLanguage}
-                                onSelectVoice={setVoice}
-                            />
-                        )}
-                        {currentStep === 2 && <SelectMusic selected={music} onSelect={setMusic} />}
-                        {currentStep === 3 && <SelectVideoStyle selected={videoStyle} onSelect={setVideoStyle} />}
-                        {currentStep === 4 && <SelectCaptionStyle selected={captionStyle} onSelect={setCaptionStyle} />}
-                        {currentStep === 5 && <SeriesDetails data={seriesData} onChange={setSeriesData} />}
-                    </motion.div>
-                </AnimatePresence>
-            </div>
-
-            {/* Navigation Buttons */}
-            <div className="flex items-center justify-between mt-8 pt-6 border-t border-border/30">
-                <button
-                    onClick={handleBack}
-                    disabled={currentStep === 0}
-                    className={`
-                        flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium
-                        transition-all duration-200
-                        ${currentStep === 0
-                            ? 'text-muted-foreground/40 cursor-not-allowed'
-                            : 'text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer'
-                        }
-                    `}
+                {/* Create New Button */}
+                <Link
+                    href="/short-generator/create"
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-primary to-accent text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200"
                 >
-                    <ArrowLeft className="w-4 h-4" />
-                    Back
-                </button>
+                    <Plus className="w-4 h-4" />
+                    Create New
+                </Link>
+            </motion.div>
 
-                {currentStep < steps.length - 1 ? (
-                    <button
-                        onClick={handleNext}
-                        disabled={!canProceed()}
-                        className={`
-                            flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold
-                            transition-all duration-200
-                            ${canProceed()
-                                ? 'bg-gradient-to-r from-primary to-accent text-white shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] cursor-pointer'
-                                : 'bg-muted text-muted-foreground cursor-not-allowed'
-                            }
-                        `}
-                    >
-                        Next Step
-                        <ArrowRight className="w-4 h-4" />
-                    </button>
-                ) : (
-                    <button
-                        onClick={handleGenerate}
-                        disabled={!canProceed() || isGenerating}
-                        className={`
-                            flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold
-                            transition-all duration-200
-                            ${canProceed() && !isGenerating
-                                ? 'bg-gradient-to-r from-primary/80 to-accent/80 text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] cursor-pointer'
-                                : 'bg-muted text-muted-foreground cursor-not-allowed'
-                            }
-                        `}
-                    >
-                        {isGenerating ? (
-                            <>
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                                Generating...
-                            </>
-                        ) : (
-                            <>
-                                <Sparkles className="w-4 h-4" />
-                                Generate Series
-                            </>
-                        )}
-                    </button>
-                )}
-            </div>
+            {/* Content — New Series Tab */}
+            {activeTab === 'new' && (
+                <>
+                    {/* Loading Skeletons */}
+                    {loading && (
+                        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {[1, 2, 3].map(i => (
+                                <div key={i} className="rounded-2xl border border-border/40 bg-white/60 overflow-hidden animate-pulse">
+                                    <div className="h-44 bg-muted/60" />
+                                    <div className="p-4 space-y-3">
+                                        <div className="h-4 bg-muted/60 rounded-lg w-3/4" />
+                                        <div className="h-3 bg-muted/40 rounded-lg w-1/2" />
+                                        <div className="flex gap-2 pt-2">
+                                            <div className="h-8 bg-muted/40 rounded-lg flex-1" />
+                                            <div className="h-8 bg-muted/40 rounded-lg flex-1" />
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Empty State */}
+                    {!loading && series.length === 0 && (
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="text-center py-16"
+                        >
+                            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/10 to-accent/10 flex items-center justify-center mx-auto mb-5">
+                                <Clapperboard className="w-10 h-10 text-primary/50" />
+                            </div>
+                            <h3 className="text-xl font-bold mb-2">No series yet</h3>
+                            <p className="text-muted-foreground text-sm mb-6 max-w-sm mx-auto">
+                                Create your first AI-generated short video series and start producing viral content
+                            </p>
+                            <Link
+                                href="/short-generator/create"
+                                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold bg-gradient-to-r from-primary to-accent text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:scale-[1.02] transition-all"
+                            >
+                                <Plus className="w-4 h-4" />
+                                Create Your First Series
+                            </Link>
+                        </motion.div>
+                    )}
+
+                    {/* Series Grid */}
+                    {!loading && series.length > 0 && (
+                        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {series.map((s, index) => (
+                                <motion.div
+                                    key={s.seriesId}
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: index * 0.05, duration: 0.4 }}
+                                    className="group relative rounded-2xl border border-border/40 bg-white/70 backdrop-blur-sm hover:shadow-xl hover:shadow-primary/5 hover:border-primary/20 transition-all duration-300"
+                                >
+                                    {/* Thumbnail */}
+                                    <div className="relative h-44 bg-gradient-to-br from-primary/20 via-accent/10 to-secondary/20 overflow-hidden rounded-t-2xl">
+                                        {s.thumbnailUrl ? (
+                                            <Image
+                                                src={s.thumbnailUrl}
+                                                alt={s.title}
+                                                fill
+                                                className="object-cover group-hover:scale-105 transition-transform duration-500"
+                                            />
+                                        ) : (
+                                            <div className="flex flex-col items-center justify-center h-full gap-2">
+                                                {generatingThumbnail === s.seriesId ? (
+                                                    <Loader2 className="w-6 h-6 text-primary/40 animate-spin" />
+                                                ) : (
+                                                    <>
+                                                        <ImageIcon className="w-8 h-8 text-primary/30" />
+                                                        <button
+                                                            onClick={() => handleRegenThumbnail(s)}
+                                                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/60 backdrop-blur-sm text-xs font-medium text-primary hover:bg-white/80 transition-colors cursor-pointer"
+                                                        >
+                                                            <RefreshCw className="w-3 h-3" />
+                                                            Generate Thumbnail
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {/* Status badge */}
+                                        {s.status === 'paused' && (
+                                            <div className="absolute top-3 left-3 flex items-center gap-1 px-2 py-1 rounded-full bg-yellow-500/90 text-white text-[10px] font-bold uppercase tracking-wide">
+                                                <Pause className="w-3 h-3" />
+                                                Paused
+                                            </div>
+                                        )}
+
+                                        {/* Edit icon on thumbnail */}
+                                        <Link
+                                            href={`/short-generator/create?edit=${s.seriesId}`}
+                                            className="absolute top-3 right-3 w-8 h-8 rounded-lg bg-black/40 backdrop-blur-sm flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-black/60"
+                                        >
+                                            <Edit3 className="w-4 h-4" />
+                                        </Link>
+                                    </div>
+
+                                    {/* Info */}
+                                    <div className="p-4">
+                                        <div className="flex items-start justify-between gap-2 mb-2">
+                                            <h3 className="font-semibold text-sm line-clamp-2 leading-snug">
+                                                {s.title}
+                                            </h3>
+
+                                            {/* Popover trigger */}
+                                            <div className="relative" ref={openPopover === s.seriesId ? popoverRef : null}>
+                                                <button
+                                                    onClick={() => setOpenPopover(openPopover === s.seriesId ? null : s.seriesId)}
+                                                    className="shrink-0 w-7 h-7 rounded-lg hover:bg-muted/60 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                                >
+                                                    <MoreVertical className="w-4 h-4" />
+                                                </button>
+
+                                                {/* Popover */}
+                                                {openPopover === s.seriesId && (
+                                                    <div className="absolute right-0 top-8 z-20 w-40 bg-white rounded-xl border border-border/60 shadow-xl shadow-black/10 py-1.5 animate-fade-in-up">
+                                                        <Link
+                                                            href={`/short-generator/create?edit=${s.seriesId}`}
+                                                            className="flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted/50 transition-colors"
+                                                        >
+                                                            <Edit3 className="w-3.5 h-3.5" />
+                                                            Edit
+                                                        </Link>
+                                                        <button
+                                                            onClick={() => handleToggleStatus(s)}
+                                                            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+                                                        >
+                                                            {s.status === 'paused' ? (
+                                                                <>
+                                                                    <Play className="w-3.5 h-3.5" />
+                                                                    Resume
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Pause className="w-3.5 h-3.5" />
+                                                                    Pause
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                        <div className="h-px bg-border/40 my-1" />
+                                                        <button
+                                                            onClick={() => handleDelete(s.seriesId)}
+                                                            disabled={deletingId === s.seriesId}
+                                                            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors cursor-pointer disabled:opacity-50"
+                                                        >
+                                                            {deletingId === s.seriesId ? (
+                                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                            ) : (
+                                                                <Trash2 className="w-3.5 h-3.5" />
+                                                            )}
+                                                            Delete
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Date */}
+                                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-4">
+                                            <Calendar className="w-3 h-3" />
+                                            {formatDate(s.createdAt)}
+                                        </div>
+
+                                        {/* Action buttons */}
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-border/50 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all cursor-pointer"
+                                            >
+                                                <Eye className="w-3.5 h-3.5" />
+                                                View Videos
+                                            </button>
+                                            <button
+                                                onClick={() => handleGenerate(s)}
+                                                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-gradient-to-r from-primary/90 to-accent/90 text-white shadow-sm hover:shadow-md hover:scale-[1.02] transition-all cursor-pointer"
+                                            >
+                                                <Sparkles className="w-3.5 h-3.5" />
+                                                Generate
+                                            </button>
+                                        </div>
+                                    </div>
+                                </motion.div>
+                            ))}
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Content — From Courses Tab */}
+            {activeTab === 'courses' && (
+                <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="text-center py-16"
+                >
+                    <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-secondary/10 to-secondary/5 flex items-center justify-center mx-auto mb-5">
+                        <Video className="w-10 h-10 text-secondary/50" />
+                    </div>
+                    <h3 className="text-xl font-bold mb-2">Coming Soon</h3>
+                    <p className="text-muted-foreground text-sm max-w-md mx-auto">
+                        Soon you&apos;ll be able to turn your generated video courses into bite-sized shorts — perfect as quick revision content for each chapter.
+                    </p>
+                </motion.div>
+            )}
         </div>
     )
 }

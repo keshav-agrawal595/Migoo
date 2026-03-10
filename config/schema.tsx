@@ -74,6 +74,9 @@ export const shortVideoSeries = pgTable("short_video_series", {
     platform: varchar({ length: 50 }).notNull(),        // 'youtube' | 'instagram' | 'email'
     publishTime: timestamp("publish_time").notNull(),
 
+    // Thumbnail
+    thumbnailUrl: text("thumbnail_url"),
+
     // Status tracking
     status: varchar({ length: 50 }).default("pending"), // pending | generating | completed | failed
     createdAt: timestamp("created_at").defaultNow(),
