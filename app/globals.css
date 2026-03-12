@@ -453,6 +453,17 @@
   }
 }
 
+/* Horizontal shimmer for progress bars */
+@keyframes shimmer-h {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 /* Animation Classes */
 .animate-float {
   animation: float 6s ease-in-out infinite;

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
@@ -47,12 +48,14 @@ type TabMode = 'new' | 'courses'
 
 function ShortGeneratorPage() {
     const { user } = useUser()
+    const router = useRouter()
     const [activeTab, setActiveTab] = useState<TabMode>('new')
     const [series, setSeries] = useState<ShortSeries[]>([])
     const [loading, setLoading] = useState(true)
     const [openPopover, setOpenPopover] = useState<string | null>(null)
     const [deletingId, setDeletingId] = useState<string | null>(null)
     const [generatingThumbnail, setGeneratingThumbnail] = useState<string | null>(null)
+    const [generatingVideo, setGeneratingVideo] = useState<string | null>(null)
     const attemptedThumbnails = useRef<Set<string>>(new Set())
     const popoverRef = useRef<HTMLDivElement>(null)
 
@@ -154,9 +157,25 @@ function ShortGeneratorPage() {
         setOpenPopover(null)
     }
 
-    // Generate videos (placeholder trigger)
+    // Generate videos — trigger Inngest function
     const handleGenerate = async (s: ShortSeries) => {
-        toast.info(`Video generation for "${s.title}" coming soon!`)
+        setGeneratingVideo(s.seriesId)
+        try {
+            const res = await fetch('/api/short-series/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ seriesId: s.seriesId }),
+            })
+            const data = await res.json()
+            if (data.success) {
+                toast.success(`Video generation started for "${s.title}"`)
+            } else {
+                toast.error(data.error || 'Failed to start generation')
+            }
+        } catch {
+            toast.error('Failed to start video generation')
+        }
+        setGeneratingVideo(null)
     }
 
     const formatDate = (date: string) => {
@@ -168,7 +187,7 @@ function ShortGeneratorPage() {
     }
 
     return (
-        <div className="max-w-6xl mx-auto px-4 py-8 md:py-12">
+        <div className="max-w-6xl mx-auto px-4 pt-0 pb-6 -mt-6">
             {/* Header */}
             <motion.div
                 initial={{ opacity: 0, y: -20 }}
@@ -405,19 +424,20 @@ function ShortGeneratorPage() {
 
                                         {/* Action buttons */}
                                         <div className="flex items-center gap-2">
-                                            <button
+                                            <Link
+                                                href={`/short-generator/${s.seriesId}`}
                                                 className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-border/50 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all cursor-pointer"
                                             >
                                                 <Eye className="w-3.5 h-3.5" />
                                                 View Videos
-                                            </button>
-                                            <button
-                                                onClick={() => handleGenerate(s)}
+                                            </Link>
+                                            <Link
+                                                href={`/short-generator/${s.seriesId}?generate=true`}
                                                 className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-gradient-to-r from-primary/90 to-accent/90 text-white shadow-sm hover:shadow-md hover:scale-[1.02] transition-all cursor-pointer"
                                             >
                                                 <Sparkles className="w-3.5 h-3.5" />
                                                 Generate
-                                            </button>
+                                            </Link>
                                         </div>
                                     </div>
                                 </motion.div>

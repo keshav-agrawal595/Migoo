@@ -83,3 +83,30 @@ export const shortVideoSeries = pgTable("short_video_series", {
     updatedAt: timestamp("updated_at").defaultNow(),
 })
 
+// ── Short Video Generated Assets (one series → many videos) ─────
+export const shortVideoAssets = pgTable("short_video_assets", {
+    id: integer().primaryKey().generatedAlwaysAsIdentity(),
+    videoId: varchar("video_id", { length: 255 }).notNull().unique(),
+    seriesId: varchar("series_id", { length: 255 }).notNull().references(() => shortVideoSeries.seriesId),
+
+    // Script data from step 2
+    videoTitle: varchar("video_title", { length: 500 }).notNull(),
+    scriptData: json("script_data").notNull(),          // { totalScenes, scenes: [...] }
+
+    // Audio data from step 3
+    audioUrl: text("audio_url"),
+    audioDuration: real("audio_duration"),               // seconds
+
+    // Caption data from step 4
+    captionData: json("caption_data"),                   // { transcript, wordTimestamps, segments }
+
+    // Image data from step 5
+    imageUrls: json("image_urls"),                       // ["url1", "url2", ...] per scene
+
+    // Final rendered video
+    videoUrl: text("video_url"),
+
+    // Status
+    status: varchar({ length: 50 }).default("completed"), // generating | completed | failed
+    createdAt: timestamp("created_at").defaultNow(),
+})
