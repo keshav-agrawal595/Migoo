@@ -1,13 +1,13 @@
 import { db } from "@/config/db";
 import { coursesTable } from "@/config/schema";
-import { generateLeonardoImage, LEONARDO_STYLES } from "@/lib/leonardo";
+import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Leonardo AI THUMBNAIL GENERATION — One thumbnail per course
+// Nano Banana 2 THUMBNAIL GENERATION — One thumbnail per course
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
         const { courseId, courseName } = await req.json();
 
         console.log('\n' + '═'.repeat(80));
-        console.log('🖼️  Leonardo AI THUMBNAIL GENERATION');
+        console.log('🖼️  Nano Banana 2 THUMBNAIL GENERATION');
         console.log('═'.repeat(80));
         console.log('Course:', courseName);
         console.log('Course ID:', courseId);
@@ -186,18 +186,19 @@ export async function POST(req: NextRequest) {
 
         // Pick a visually striking style for high-quality thumbnails (Randomly shuffled)
         const aestheticStyles = [
-            LEONARDO_STYLES["Portrait Cinematic"],
-            LEONARDO_STYLES["3D Render"],
-            LEONARDO_STYLES["Graphic Design 3D"],
-            LEONARDO_STYLES["Ray Traced"],
-            LEONARDO_STYLES["Stock Photo"],
-            LEONARDO_STYLES["Dynamic"]
+            NANO_BANANA_STYLES["Portrait Cinematic"],
+            NANO_BANANA_STYLES["3D Render"],
+            NANO_BANANA_STYLES["Graphic Design 3D"],
+            NANO_BANANA_STYLES["Ray Traced"],
+            NANO_BANANA_STYLES["Stock Photo"],
+            NANO_BANANA_STYLES["Dynamic"]
         ];
         const selectedStyle = aestheticStyles[Math.floor(Math.random() * aestheticStyles.length)];
 
-        console.log(`📸 Calling Leonardo AI FLUX Schnell (Style: ${selectedStyle}, 768×432, auto-rotating keys)...`);
+        // 1200×896 — valid 4:3 pair for Nano Banana 2, perfect landscape for course thumbnails
+        console.log(`📸 Calling Nano Banana 2 (Style: ${selectedStyle}, 1200×896, auto-rotating keys)...`);
 
-        const signedUrl = await generateLeonardoImage(prompt, 768, 432, selectedStyle);
+        const signedUrl = await generateNanoBananaImage(prompt, 1200, 896, selectedStyle);
         console.log(`✅ Leonardo returned URL: ${signedUrl.substring(0, 80)}...`);
 
         // ═════════════════════════════════════════════════════════════════
@@ -221,7 +222,7 @@ export async function POST(req: NextRequest) {
             thumbnailUrl: localPath,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'leonardo-flux-schnell',
+                engine: 'nano-banana-2',
                 courseId,
                 prompt: prompt.substring(0, 200)
             }

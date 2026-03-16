@@ -2,6 +2,7 @@
 import { motion } from 'framer-motion'
 import { Volume2, VolumeX } from 'lucide-react'
 import { useRef, useState } from 'react'
+import { MUSIC_URLS } from '@/lib/music-urls'
 
 interface Props {
     selected: string
@@ -10,14 +11,14 @@ interface Props {
 
 const musicStyles = [
     { id: 'none', label: 'No Music', description: 'Voice only, no background music', emoji: '🔇', color: 'from-gray-400/20 to-gray-500/20', audioUrl: '' },
-    { id: 'lofi', label: 'Lo-Fi Chill', description: 'Relaxed lo-fi beats, study vibes', emoji: '🎧', color: 'from-purple-400/20 to-indigo-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/chill.mp3' },
-    { id: 'cinematic', label: 'Cinematic', description: 'Epic orchestral & dramatic', emoji: '🎬', color: 'from-amber-400/20 to-orange-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/cinematic-trailer.mp3' },
-    { id: 'upbeat', label: 'Upbeat Pop', description: 'Energetic & catchy vibes', emoji: '🎵', color: 'from-pink-400/20 to-rose-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/upbeat.mp3' },
-    { id: 'corporate', label: 'Corporate', description: 'Professional & clean', emoji: '💼', color: 'from-blue-400/20 to-cyan-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/coporate.mp3' },
-    { id: 'ambient', label: 'Ambient', description: 'Atmospheric & dreamy', emoji: '🌙', color: 'from-teal-400/20 to-emerald-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/ambient.mp3' },
-    { id: 'technology', label: 'Technology', description: 'Futuristic & digital beats', emoji: '⚡', color: 'from-violet-400/20 to-purple-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/technology.mp3' },
-    { id: 'acoustic', label: 'Acoustic', description: 'Warm guitar & natural sounds', emoji: '🎸', color: 'from-yellow-400/20 to-amber-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/acoustic.mp3' },
-    { id: 'hiphop', label: 'Hip Hop', description: 'Modern trap & hip hop beats', emoji: '🎤', color: 'from-red-400/20 to-rose-500/20', audioUrl: 'https://ik.imagekit.io/parmeet/background-music/hip-hop.mp3' },
+    { id: 'lofi', label: 'Lo-Fi Chill', description: 'Relaxed lo-fi beats, study vibes', emoji: '🎧', color: 'from-purple-400/20 to-indigo-500/20', audioUrl: MUSIC_URLS['lofi'] },
+    { id: 'cinematic', label: 'Cinematic', description: 'Epic orchestral & dramatic', emoji: '🎬', color: 'from-amber-400/20 to-orange-500/20', audioUrl: MUSIC_URLS['cinematic'] },
+    { id: 'upbeat', label: 'Upbeat Pop', description: 'Energetic & catchy vibes', emoji: '🎵', color: 'from-pink-400/20 to-rose-500/20', audioUrl: MUSIC_URLS['upbeat'] },
+    { id: 'corporate', label: 'Corporate', description: 'Professional & clean', emoji: '💼', color: 'from-blue-400/20 to-cyan-500/20', audioUrl: MUSIC_URLS['corporate'] },
+    { id: 'ambient', label: 'Ambient', description: 'Atmospheric & dreamy', emoji: '🌙', color: 'from-teal-400/20 to-emerald-500/20', audioUrl: MUSIC_URLS['ambient'] },
+    { id: 'technology', label: 'Technology', description: 'Futuristic & digital beats', emoji: '⚡', color: 'from-violet-400/20 to-purple-500/20', audioUrl: MUSIC_URLS['technology'] },
+    { id: 'acoustic', label: 'Acoustic', description: 'Warm guitar & natural sounds', emoji: '🎸', color: 'from-yellow-400/20 to-amber-500/20', audioUrl: MUSIC_URLS['acoustic'] },
+    { id: 'hiphop', label: 'Hip Hop', description: 'Modern trap & hip hop beats', emoji: '🎤', color: 'from-red-400/20 to-rose-500/20', audioUrl: MUSIC_URLS['hiphop'] },
 ]
 
 function SelectMusic({ selected, onSelect }: Props) {

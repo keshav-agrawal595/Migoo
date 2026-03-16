@@ -1,0 +1,45 @@
+name: Render Video
+on:
+  repository_dispatch:
+    types: [render-video]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write props to file
+        run: |
+          mkdir -p tmp
+          echo '${{ toJson(github.event.client_payload.props) }}' > tmp/props.json
+
+      - name: Render Video
+        run: |
+          npx remotion render MainVideo out/video.mp4 \
+            --props="./tmp/props.json"
+
+      - name: Upload to Vercel Blob & Notify Webhook
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ github.event.client_payload.blobToken || secrets.BLOB_READ_WRITE_TOKEN }}
+          VIDEO_ID: ${{ github.event.client_payload.videoId }}
+          WEBHOOK_URL: ${{ github.event.client_payload.webhookUrl }}
+        run: node scripts/upload-render.js
+
+      - name: Notify Failure
+        if: failure()
+        run: |
+          curl -s -X PATCH "${{ github.event.client_payload.webhookUrl }}" \
+            -H "Content-Type: application/json" \
+            -d '{"videoId": "${{ github.event.client_payload.videoId }}", "status": "failed"}'

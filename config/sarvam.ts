@@ -94,13 +94,14 @@ ${systemPrompt}`;
      * Transcribe audio using Sarvam AI Speech-to-Text
      * Returns word-level timestamps for precise caption generation
      */
-    async transcribeAudio(audioUrl: string): Promise<{
+    async transcribeAudio(audioUrl: string, languageCode: string = "en-IN"): Promise<{
         text: string;
         words: Array<{ text: string; start: number; end: number; }>;
         languageCode: string;
     }> {
         console.log('🎤 Starting Sarvam AI Speech-to-Text...');
         console.log('📍 Audio URL:', audioUrl);
+        console.log('🌐 Language Code:', languageCode);
 
         try {
             // Step 1: Download audio from URL
@@ -121,7 +122,7 @@ ${systemPrompt}`;
                 model: "saaras:v3",
                 // @ts-ignore
                 mode: "transcribe", // transcribe mode (not translate)
-                languageCode: "en-IN", // English (India) - matches TTS
+                languageCode: languageCode as any, // Use provided language code
                 withDiarization: false, // No speaker separation needed
                 numSpeakers: 1
             });
@@ -221,7 +222,7 @@ ${systemPrompt}`;
             return {
                 text: fullText,
                 words: words,
-                languageCode: 'en-IN'
+                languageCode: languageCode
             };
 
         } catch (error: any) {

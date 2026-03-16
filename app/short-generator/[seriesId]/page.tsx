@@ -5,11 +5,15 @@ import {
     ArrowLeft,
     Check,
     Clock,
+    Download,
     Film,
+    FileText,
     Image as ImageIcon,
     Loader2,
+    Mic,
     Play,
     Sparkles,
+    Subtitles,
     Video,
     Wand2,
 } from 'lucide-react'
@@ -18,6 +22,11 @@ import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useRef, useState, Suspense } from 'react'
 import { toast } from 'sonner'
+import { Player } from '@remotion/player'
+import { MainComposition } from '@/remotion/Composition'
+import { getMusicUrl } from '@/lib/music-urls'
+import { X } from 'lucide-react'
+import * as Dialog from '@radix-ui/react-dialog'
 
 // ─── Types ───────────────────────────────────────────────────────────
 interface SeriesData {
@@ -56,7 +65,7 @@ interface VideoAsset {
 }
 
 // ─── Step labels for progress bars ───────────────────────────────────
-const STEP_KEYS = ['script', 'voice', 'captions', 'images', 'saving'] as const
+const STEP_KEYS = ['script', 'voice', 'captions', 'images', 'video', 'render', 'saving'] as const
 
 function getActiveStepIndex(status: string | null): number {
     if (!status || !status.startsWith('generating:')) return -1
@@ -77,6 +86,8 @@ function SeriesVideosPageContent() {
     const [loading, setLoading] = useState(true)
     const [generating, setGenerating] = useState(false)
     const [triggeringGeneration, setTriggeringGeneration] = useState(false)
+    const [selectedVideo, setSelectedVideo] = useState<VideoAsset | null>(null)
+    const [resettingStatus, setResettingStatus] = useState(false)
     const hasTriggeredGenerate = useRef(false)
 
     // ─── Fetch series + videos ───────────────────────────────────────
@@ -109,6 +120,17 @@ function SeriesVideosPageContent() {
         return () => clearInterval(interval)
     }, [generating, fetchData])
 
+    // Refresh when a video is rendered locally or via cloud
+    useEffect(() => {
+        const handleRefresh = () => fetchData();
+        window.addEventListener('video-rendered', handleRefresh);
+        window.addEventListener('focus', handleRefresh); // Refresh when user comes back to tab
+        return () => {
+            window.removeEventListener('video-rendered', handleRefresh);
+            window.removeEventListener('focus', handleRefresh);
+        };
+    }, [fetchData]);
+
     // ─── Auto-trigger generation if ?generate=true ───────────────────
     useEffect(() => {
         if (shouldGenerate && series && !hasTriggeredGenerate.current && !generating) {
@@ -124,6 +146,30 @@ function SeriesVideosPageContent() {
             handleGenerate()
         }
     }, [shouldGenerate, series, generating, router, searchParams, seriesId])
+
+    // ─── Force Reset Status ─────────────────────────────────────────
+    const handleForceStop = async () => {
+        if (!confirm('Are you sure you want to force stop? This will clear the "Processing" state.')) return
+        
+        setResettingStatus(true)
+        try {
+            const res = await fetch(`/api/short-series/${seriesId}/reset-status`, { method: 'POST' })
+            const data = await res.json()
+            if (data.success) {
+                toast.success('Status reset successfully')
+                setTriggeringGeneration(false)
+                setGenerating(false)
+                fetchData()
+            } else {
+                toast.error('Failed to reset status')
+            }
+        } catch (err) {
+            console.error(err)
+            toast.error('Error resetting status')
+        } finally {
+            setResettingStatus(false)
+        }
+    }
 
     // ─── Trigger generation ──────────────────────────────────────────
     const handleGenerate = async () => {
@@ -276,26 +322,61 @@ function SeriesVideosPageContent() {
                         className="relative rounded-2xl border-2 border-violet-500/30 bg-white/70 backdrop-blur-sm overflow-hidden"
                     >
                         {/* Shimmer thumbnail area */}
-                        <div className="relative h-44 bg-linear-to-br from-violet-100/80 via-purple-50/60 to-indigo-100/80 overflow-hidden">
+                        <div className="relative h-44 bg-linear-to-br from-muted/30 to-muted/10 overflow-hidden">
                             <div className="absolute inset-0 bg-linear-to-r from-transparent via-white/30 to-transparent animate-shimmer" />
-                            <div className="flex flex-col items-center justify-center h-full gap-3">
-                                <motion.div
-                                    className="w-14 h-14 rounded-2xl bg-linear-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/30"
-                                    animate={{ scale: [1, 1.05, 1] }}
-                                    transition={{ duration: 2, repeat: Infinity }}
-                                >
-                                    <Wand2 className="w-7 h-7 text-white" />
-                                </motion.div>
-                                <span className="text-sm font-semibold text-violet-700">
-                                    {activeStepIndex >= 0
-                                        ? `${STEP_KEYS[activeStepIndex].charAt(0).toUpperCase() + STEP_KEYS[activeStepIndex].slice(1)}...`
-                                        : 'Starting...'}
-                                </span>
+                            
+                            {/* Dynamic Animation Layer */}
+                            <div className="flex flex-col items-center justify-center h-full gap-3 relative z-10">
+                                {activeStepIndex >= 0 && STEP_KEYS[activeStepIndex] === 'render' ? (
+                                    <>
+                                        <motion.div
+                                            key="render-anim"
+                                            initial={{ scale: 0.8, opacity: 0 }}
+                                            animate={{ scale: 1, opacity: 1 }}
+                                            className="relative"
+                                        >
+                                            <motion.div
+                                                className={`absolute inset-0 rounded-2xl bg-cyan-500 opacity-20`}
+                                                animate={{ scale: [1, 1.4, 1] }}
+                                                transition={{ duration: 2, repeat: Infinity }}
+                                            />
+                                            <div className={`w-14 h-14 rounded-2xl bg-cyan-500 flex items-center justify-center shadow-lg shadow-cyan-500/30 relative z-10`}>
+                                                <Film className="w-7 h-7 text-white" />
+                                            </div>
+                                        </motion.div>
+                                        <motion.span 
+                                            initial={{ opacity: 0, y: 5 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            className="text-sm font-bold text-foreground"
+                                        >
+                                            Rendering MP4...
+                                        </motion.span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <motion.div
+                                            className="w-14 h-14 rounded-2xl bg-linear-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/30"
+                                            animate={{ scale: [1, 1.05, 1] }}
+                                            transition={{ duration: 2, repeat: Infinity }}
+                                        >
+                                            <Wand2 className="w-7 h-7 text-white" />
+                                        </motion.div>
+                                        <span className="text-sm font-semibold text-violet-700">
+                                            {activeStepIndex >= 0
+                                                ? `${STEP_KEYS[activeStepIndex].charAt(0).toUpperCase() + STEP_KEYS[activeStepIndex].slice(1)}...`
+                                                : 'Starting...'}
+                                        </span>
+                                    </>
+                                )}
                             </div>
 
                             {/* Generating badge */}
-                            <div className="absolute top-3 left-3 flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide backdrop-blur-sm bg-violet-500/90 text-white">
-                                <Loader2 className="w-3 h-3 animate-spin" /> Generating
+                            <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide backdrop-blur-md bg-black/80 text-white z-20">
+                                <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
+                                </span>
+                                AI Generating
                             </div>
                         </div>
 
@@ -305,11 +386,21 @@ function SeriesVideosPageContent() {
                                 Generating new video...
                             </h3>
 
-                            <div className="flex items-center gap-3 text-xs text-muted-foreground/60 mb-3">
-                                <span className="flex items-center gap-1">
+                            <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
                                     <Loader2 className="w-3 h-3 animate-spin" />
                                     Processing
-                                </span>
+                                </div>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        handleForceStop()
+                                    }}
+                                    disabled={resettingStatus}
+                                    className="text-[10px] font-medium text-red-500 hover:text-red-600 transition-colors uppercase tracking-wider disabled:opacity-50"
+                                >
+                                    {resettingStatus ? 'Stopping...' : 'Force Stop'}
+                                </button>
                             </div>
 
                             {/* Progress bars — light up green as steps complete */}
@@ -353,7 +444,10 @@ function SeriesVideosPageContent() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: index * 0.05, duration: 0.4 }}
-                        className="group relative rounded-2xl border border-border/40 bg-white/70 backdrop-blur-sm hover:shadow-xl hover:shadow-primary/5 hover:border-primary/20 transition-all duration-300 overflow-hidden"
+                        onClick={() => video.scriptData && video.audioUrl && setSelectedVideo(video)}
+                        className={`group relative rounded-2xl border border-border/40 bg-white/70 backdrop-blur-sm transition-all duration-300 overflow-hidden ${
+                            video.scriptData && video.audioUrl ? 'hover:shadow-xl hover:shadow-primary/5 hover:border-primary/20 cursor-pointer' : ''
+                        }`}
                     >
                         {/* Thumbnail / First scene image */}
                         <div className="relative h-44 bg-linear-to-br from-primary/20 via-accent/10 to-secondary/20 overflow-hidden">
@@ -372,18 +466,18 @@ function SeriesVideosPageContent() {
 
                             {/* Status overlay badge */}
                             <div className={`absolute top-3 left-3 flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide backdrop-blur-sm ${
-                                video.status === 'completed'
-                                    ? 'bg-emerald-500/90 text-white'
+                                video.status === 'completed' && video.videoUrl
+                                    ? 'bg-emerald-500/90 text-white' // Final MP4 ready
                                     : video.status === 'failed'
                                         ? 'bg-red-500/90 text-white'
                                         : 'bg-amber-500/90 text-white'
                             }`}>
-                                {video.status === 'completed' ? (
-                                    <><Check className="w-3 h-3" /> Complete</>
+                                {video.status === 'completed' && video.videoUrl ? (
+                                    <><Check className="w-3 h-3" /> Ready to Download</>
                                 ) : video.status === 'failed' ? (
                                     <>Failed</>
                                 ) : (
-                                    <><Loader2 className="w-3 h-3 animate-spin" /> Generating</>
+                                    <><Loader2 className="w-3 h-3 animate-spin" /> {video.status === 'rendering' ? 'Rendering MP4...' : 'Processing...'}</>
                                 )}
                             </div>
 
@@ -391,7 +485,7 @@ function SeriesVideosPageContent() {
                             {video.audioDuration && (
                                 <div className="absolute bottom-3 right-3 flex items-center gap-1 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm text-white text-[11px] font-medium">
                                     <Clock className="w-3 h-3" />
-                                    {Math.round(video.audioDuration)}s
+                                    {Math.floor((video.audioDuration || 0) / 60)}:{Math.floor((video.audioDuration || 0) % 60).toString().padStart(2, '0')}
                                 </div>
                             )}
 
@@ -409,22 +503,6 @@ function SeriesVideosPageContent() {
                                 {video.videoTitle}
                             </h3>
 
-                            {/* Meta */}
-                            <div className="flex items-center gap-3 text-xs text-muted-foreground mb-3">
-                                {video.scriptData?.totalScenes && (
-                                    <span className="flex items-center gap-1">
-                                        <Film className="w-3 h-3" />
-                                        {video.scriptData.totalScenes} scenes
-                                    </span>
-                                )}
-                                {video.imageUrls && (
-                                    <span className="flex items-center gap-1">
-                                        <ImageIcon className="w-3 h-3" />
-                                        {video.imageUrls.filter((u: string) => u).length} images
-                                    </span>
-                                )}
-                            </div>
-
                             {/* Mini completion bars */}
                             <div className="flex items-center gap-1.5">
                                 {[
@@ -432,6 +510,8 @@ function SeriesVideosPageContent() {
                                     { done: !!video.audioUrl, label: 'Voice' },
                                     { done: !!video.captionData, label: 'Captions' },
                                     { done: video.imageUrls && video.imageUrls.length > 0, label: 'Images' },
+                                    { done: !!video.audioUrl, label: 'Music' },
+                                    { done: video.status === 'completed', label: 'Render' },
                                     { done: video.status === 'completed', label: 'Done' },
                                 ].map((s, i) => (
                                     <div
@@ -447,8 +527,188 @@ function SeriesVideosPageContent() {
                     </motion.div>
                 ))}
             </div>
+
+            {/* Video Player Modal */}
+            <VideoPlayerDialog
+                video={selectedVideo}
+                series={series}
+                onClose={() => setSelectedVideo(null)}
+            />
         </div>
     )
+}
+
+function VideoPlayerDialog({ video, series, onClose }: { video: VideoAsset | null, series: SeriesData | null, onClose: () => void }) {
+    const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+    const [videoUrl, setVideoUrl] = useState<string | null>(null);
+    const [isRendering, setIsRendering] = useState(false);
+    const bgMusicRef = useRef<HTMLAudioElement | null>(null);
+
+    // Resolve background music URL from series
+    const musicUrl = series?.music ? getMusicUrl(series.music) : '';
+
+    // Initialize local state when video changes
+    useEffect(() => {
+        if (video) {
+            setVideoUrl(video.videoUrl || null);
+            setIsRendering(video.status === 'rendering');
+            setHasStartedPlaying(false);
+        }
+    }, [video?.videoId, video?.videoUrl, video?.status]);
+
+    // Polling for rendering status
+    useEffect(() => {
+        let interval: NodeJS.Timeout;
+        if (isRendering && video?.videoId) {
+            interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/video/status?videoId=${video.videoId}`);
+                    const data = await res.json();
+                    if (data.success && data.video.status === 'completed' && data.video.videoUrl) {
+                        setVideoUrl(data.video.videoUrl);
+                        setIsRendering(false);
+                        toast.success('MP4 Render Complete!');
+                        window.dispatchEvent(new CustomEvent('video-rendered', { detail: { videoId: video.videoId } }));
+                    } else if (data.success && data.video.status === 'failed') {
+                        setIsRendering(false);
+                        toast.error('MP4 Render Failed.');
+                    }
+                } catch (err) {
+                    console.error('Polling error:', err);
+                }
+            }, 3000);
+        }
+        return () => clearInterval(interval);
+    }, [isRendering, video?.videoId]);
+
+    if (!video) return null;
+
+    const handleDownload = () => {
+        if (!videoUrl) return;
+        window.open(videoUrl, '_blank');
+    };
+
+    // Sync background music with video play/pause
+    const handleVideoPlay = () => {
+        setHasStartedPlaying(true);
+        console.log('🎵 handleVideoPlay called — musicUrl:', musicUrl, '| bgMusicRef:', bgMusicRef.current);
+        if (bgMusicRef.current) {
+            console.log('🎵 Attempting to play background music at volume:', bgMusicRef.current.volume);
+            bgMusicRef.current.play().then(() => {
+                console.log('✅ Background music started playing!');
+            }).catch((err) => {
+                console.error('❌ Background music play failed:', err);
+            });
+        } else {
+            console.warn('⚠️ bgMusicRef.current is null — no audio element found');
+        }
+    };
+
+    const handleVideoPause = () => {
+        if (bgMusicRef.current) {
+            bgMusicRef.current.pause();
+        }
+    };
+
+    const handleClose = () => {
+        if (bgMusicRef.current) {
+            bgMusicRef.current.pause();
+            bgMusicRef.current.currentTime = 0;
+        }
+        onClose();
+    };
+
+    return (
+        <Dialog.Root open={!!video} onOpenChange={(open) => !open && handleClose()}>
+            <Dialog.Portal>
+                <Dialog.Overlay className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 animate-in fade-in duration-300" />
+                <Dialog.Content className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[340px] z-50 outline-none">
+                    <div className="relative w-full aspect-9/16 rounded-3xl overflow-hidden shadow-2xl border border-white/10 bg-black">
+
+                        {/* Hidden background music audio element */}
+                        {musicUrl && (
+                            <audio
+                                ref={(el) => {
+                                    bgMusicRef.current = el;
+                                    if (el) el.volume = 0.12;
+                                }}
+                                src={musicUrl}
+                                loop
+                                preload="auto"
+                                style={{ display: 'none' }}
+                            />
+                        )}
+
+                        {/* Player / Video Tag */}
+                        {videoUrl ? (
+                            <video
+                                src={videoUrl}
+                                className="w-full h-full object-contain"
+                                controls
+                                autoPlay
+                                loop
+                                onPlay={handleVideoPlay}
+                                onPause={handleVideoPause}
+                                onEnded={handleVideoPause}
+                            />
+                        ) : (
+                            <Player
+                                component={MainComposition as any}
+                                durationInFrames={Math.floor((video.audioDuration || 60) * 30)}
+                                compositionWidth={720}
+                                compositionHeight={1280}
+                                fps={30}
+                                controls
+                                autoPlay
+                                loop
+                                style={{
+                                    width: '100%',
+                                    height: '100%',
+                                }}
+                                inputProps={{
+                                    imageUrls: video.imageUrls || [],
+                                    audioUrl: video.audioUrl || '',
+                                    musicUrl: musicUrl,
+                                    captionData: video.captionData || { segments: [] },
+                                    captionStyle: series?.captionStyle || 'bold-pop',
+                                    language: series?.language || 'en-IN',
+                                    durationInFrames: Math.floor((video.audioDuration || 60) * 30),
+                                }}
+                            />
+                        )}
+
+                        {/* Close button */}
+                        <button
+                            onClick={handleClose}
+                            className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md text-white flex items-center justify-center transition-all border border-white/10 z-10 cursor-pointer"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="mt-4 flex gap-3">
+                        {videoUrl && hasStartedPlaying ? (
+                            <motion.button
+                                initial={{ opacity: 0, scale: 0.9 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                onClick={handleDownload}
+                                className="flex-1 h-12 rounded-2xl bg-white text-black font-bold flex items-center justify-center gap-2 hover:bg-white/90 transition-all cursor-pointer shadow-lg"
+                            >
+                                <Download className="w-5 h-5" />
+                                Download MP4
+                            </motion.button>
+                        ) : isRendering ? (
+                            <div className="flex-1 h-12 rounded-2xl bg-white/10 text-white/50 font-medium flex items-center justify-center gap-2 border border-white/5">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Rendering MP4...
+                            </div>
+                        ) : null}
+                    </div>
+                </Dialog.Content>
+            </Dialog.Portal>
+        </Dialog.Root>
+    );
 }
 
 function SeriesVideosPage() {

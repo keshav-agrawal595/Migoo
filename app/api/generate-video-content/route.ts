@@ -150,12 +150,12 @@ function chunkTextForTTS(text: string, maxLength: number = 2400): string[] {
     return chunks;
 }
 
-async function generateAudioWithSarvam(text: string): Promise<Buffer> {
+async function generateAudioWithSarvam(text: string, languageCode: string = "en-IN"): Promise<Buffer> {
     if (text.length > 2500) {
         throw new Error(`Text too long for Sarvam AI: ${text.length} chars (max 2500)`);
     }
 
-    console.log(`🎤 Generating audio: ${text.length} chars`);
+    console.log(`🎤 Generating audio: ${text.length} chars (${languageCode})`);
 
     const response = await fetch('https://api.sarvam.ai/text-to-speech', {
         method: 'POST',
@@ -165,7 +165,7 @@ async function generateAudioWithSarvam(text: string): Promise<Buffer> {
         },
         body: JSON.stringify({
             text: text,
-            target_language_code: "en-IN",
+            target_language_code: languageCode,
             speaker: "kabir",
             pace: 1.05,
             speech_sample_rate: 22050,
@@ -193,13 +193,13 @@ async function generateAudioWithSarvam(text: string): Promise<Buffer> {
     return audioBuffer;
 }
 
-async function generateAudioForLongText(text: string): Promise<Buffer> {
+async function generateAudioForLongText(text: string, languageCode: string = "en-IN"): Promise<Buffer> {
     console.log(`🎵 Processing long text: ${text.length} chars`);
 
     const chunks = chunkTextForTTS(text, 2400);
 
     if (chunks.length === 1) {
-        return await generateAudioWithSarvam(chunks[0]);
+        return await generateAudioWithSarvam(chunks[0], languageCode);
     }
 
     console.log(`🔄 Generating ${chunks.length} audio chunks...`);
@@ -209,7 +209,7 @@ async function generateAudioForLongText(text: string): Promise<Buffer> {
         console.log(`🔊 Chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`);
 
         try {
-            const audioBuffer = await generateAudioWithSarvam(chunks[i]);
+            const audioBuffer = await generateAudioWithSarvam(chunks[i], languageCode);
             audioBuffers.push(audioBuffer);
             console.log(`✅ Chunk ${i + 1} generated: ${audioBuffer.length} bytes`);
         } catch (error: any) {
@@ -330,12 +330,12 @@ function wordsToShortSentenceChunks(words: Word[]): Chunk[] {
 /**
  * Generate captions using Sarvam AI Speech-to-Text
  */
-async function generateCaptions(audioUrl: string): Promise<any> {
+async function generateCaptions(audioUrl: string, languageCode: string = "en-IN"): Promise<any> {
     try {
         console.log('🎯 Generating captions with Sarvam AI...');
 
         // Use Sarvam AI for transcription
-        const transcription = await sarvam.transcribeAudio(audioUrl);
+        const transcription = await sarvam.transcribeAudio(audioUrl, languageCode);
 
         console.log(`✅ Transcription received: ${transcription.words.length} words`);
         console.log(`📝 Full text: ${transcription.text.substring(0, 100)}...`);
@@ -638,7 +638,7 @@ export async function POST(req: NextRequest) {
             try {
                 // Step 1: Generate Audio (with chunking)
                 console.log('🔊 Step 1: Generating audio...');
-                const audioBuffer = await generateAudioForLongText(narration);
+                const audioBuffer = await generateAudioForLongText(narration, 'en-IN'); // Defaulting to en-IN for main course for now, or use props if available
                 const audioDuration = getWavDurationFromBuffer(audioBuffer);
                 console.log(`✅ Audio generated: ${audioBuffer.length} bytes, duration: ${audioDuration.toFixed(2)}s`);
 
@@ -654,7 +654,7 @@ export async function POST(req: NextRequest) {
 
                 // Step 3: Generate Captions with Sarvam AI
                 console.log('🎬 Step 3: Generating captions with Sarvam AI...');
-                const captions = await generateCaptions(url);
+                const captions = await generateCaptions(url, 'en-IN'); // Defaulting to en-IN for main course
                 console.log(`✅ Captions: ${captions.chunks.length} chunks`);
 
                 // Step 4: Save to Database (upsert — handles retries gracefully)

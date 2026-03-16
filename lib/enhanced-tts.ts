@@ -180,7 +180,8 @@ async function retryWithBackoff<T>(
 
 async function generateAudioWithSarvamRetry(
     text: string,
-    retryConfig: RetryConfig
+    retryConfig: RetryConfig,
+    languageCode: string = "en-IN"
 ): Promise<Buffer> {
     if (text.length > 2500) {
         throw new Error(`Text too long: ${text.length} chars (max 2500)`);
@@ -198,7 +199,7 @@ async function generateAudioWithSarvamRetry(
                 },
                 body: JSON.stringify({
                     text: text,
-                    target_language_code: "en-IN",
+                    target_language_code: languageCode,
                     speaker: "kabir",
                     pace: 1.05,
                     speech_sample_rate: 22050,
@@ -237,6 +238,7 @@ async function generateAudioWithSarvamRetry(
 
 export async function generateAudioEnhanced(
     text: string,
+    languageCode: string = "en-IN",
     options: TTSOptions = {}
 ): Promise<Buffer> {
     const retryConfig: RetryConfig = options.retryConfig || {
@@ -270,7 +272,7 @@ export async function generateAudioEnhanced(
 
         if (chunks.length === 1) {
             console.log('📝 Single chunk, processing...');
-            return await generateAudioWithSarvamRetry(chunks[0], retryConfig);
+            return await generateAudioWithSarvamRetry(chunks[0], retryConfig, languageCode);
         }
 
         // Step 3: Process multiple chunks
@@ -287,7 +289,8 @@ export async function generateAudioEnhanced(
             try {
                 const audioBuffer = await generateAudioWithSarvamRetry(
                     chunks[i],
-                    retryConfig
+                    retryConfig,
+                    languageCode
                 );
 
                 audioBuffers.push(audioBuffer);
@@ -406,7 +409,7 @@ export async function testSarvamConnection(): Promise<boolean> {
     console.log('🔗 Testing Sarvam AI connection...');
 
     try {
-        const testAudio = await generateAudioEnhanced('Hello, this is a test.', {
+        const testAudio = await generateAudioEnhanced('Hello, this is a test.', 'en-IN', {
             sanitize: true,
             retryConfig: {
                 maxRetries: 2,

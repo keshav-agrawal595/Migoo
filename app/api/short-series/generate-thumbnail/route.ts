@@ -1,13 +1,13 @@
 import { db } from "@/config/db";
 import { shortVideoSeries } from "@/config/schema";
-import { generateLeonardoImage, LEONARDO_STYLES } from "@/lib/leonardo";
+import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Leonardo AI THUMBNAIL GENERATION — Short Video Series
+// Nano Banana 2 THUMBNAIL GENERATION — Short Video Series
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -21,12 +21,12 @@ function buildShortsThumbnailPrompt(title: string, niche: string): string {
     const keywords = words.filter(w => !stopWords.has(w.toLowerCase())).slice(0, 3).join(" ");
 
     const scenes = [
-        `A stunning vertical social media thumbnail for a "${keywords}" short video series. Bold, eye-catching 3D text "${keywords}" floating over a vibrant ${niche}-themed background. Dramatic lighting, neon accents, ultra-modern design. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k resolution.`,
-        `A cinematic vertical thumbnail showing "${keywords}" in large glowing neon letters against a dark moody backdrop with ${niche}-related visual elements. Electric blue and magenta tones, lens flare, professional YouTube Shorts style. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
-        `A hyper-modern thumbnail design with the text "${keywords}" in bold metallic 3D typography. Floating geometric shapes and ${niche}-themed icons surround the text. Gradient background from deep purple to electric blue. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
-        `A premium social media thumbnail: the words "${keywords}" rendered as holographic text floating above a stylish ${niche}-themed scene. Glowing particles, soft bokeh, cinematic depth of field. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
-        `A viral-worthy thumbnail with "${keywords}" in bold graffiti-style text on a vibrant wall. ${niche}-themed stickers and elements surround it. Street art aesthetic, bright colors, energetic composition. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
-        `A futuristic thumbnail showing "${keywords}" displayed on a floating glass screen in a high-tech environment. ${niche}-themed holographic elements in the background. Cyan and purple lighting, ray traced reflections. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
+        `A stunning landscape cinematic social media thumbnail for a "${keywords}" video series. Bold, eye-catching 3D text "${keywords}" floating over a vibrant ${niche}-themed background in 16:9 ratio. Dramatic lighting, neon accents, ultra-modern design. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k resolution.`,
+        `A cinematic wide thumbnail showing "${keywords}" in large glowing neon letters against a dark moody backdrop with ${niche}-related visual elements. Electric blue and magenta tones, lens flare, professional high-quality aesthetic. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
+        `A hyper-modern landscape thumbnail design with the text "${keywords}" in bold metallic 3D typography. Floating geometric shapes and ${niche}-themed icons surround the text. Gradient background from deep purple to electric blue. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
+        `A premium cinematic thumbnail: the words "${keywords}" rendered as holographic text floating above a stylish ${niche}-themed wide scene. Glowing particles, soft bokeh, cinematic depth of field. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
+        `A viral-worthy landscape thumbnail with "${keywords}" in bold graffiti-style text on a vibrant wide wall. ${niche}-themed stickers and elements surround it. Street art aesthetic, bright colors, energetic composition. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
+        `A futuristic cinematic thumbnail showing "${keywords}" displayed on a floating wide glass screen in a high-tech environment. ${niche}-themed holographic elements in the background. Cyan and purple lighting, ray traced reflections. STRICTLY ENSURE PERFECT SPELLING of "${keywords}". 8k.`,
     ];
 
     return scenes[Math.floor(Math.random() * scenes.length)];
@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
         const { seriesId, title, niche } = await req.json();
 
         console.log('\n' + '═'.repeat(80));
-        console.log('🖼️  Leonardo AI — SHORT SERIES THUMBNAIL');
+        console.log('🖼️  Nano Banana 2 — SHORT SERIES THUMBNAIL');
         console.log('═'.repeat(80));
         console.log('Series:', title);
         console.log('Niche:', niche);
@@ -106,19 +106,20 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Generate via Leonardo AI
+        // Generate via Nano Banana 2
         const prompt = buildShortsThumbnailPrompt(title, niche || 'creative');
         console.log('📸 Prompt:', prompt);
 
         const aestheticStyles = [
-            LEONARDO_STYLES["Dynamic"],
-            LEONARDO_STYLES["3D Render"],
-            LEONARDO_STYLES["Graphic Design 3D"],
-            LEONARDO_STYLES["Portrait Cinematic"],
+            NANO_BANANA_STYLES["Dynamic"],
+            NANO_BANANA_STYLES["3D Render"],
+            NANO_BANANA_STYLES["Graphic Design 3D"],
+            NANO_BANANA_STYLES["Portrait Cinematic"],
         ];
         const selectedStyle = aestheticStyles[Math.floor(Math.random() * aestheticStyles.length)];
 
-        const signedUrl = await generateLeonardoImage(prompt, 768, 432, selectedStyle);
+        // 1376×768 — valid 16:9 pair for Nano Banana 2, perfect for landscape dashboard cards
+        const signedUrl = await generateNanoBananaImage(prompt, 1376, 768, selectedStyle);
         const localPath = await downloadAndSaveThumbnail(signedUrl, seriesId);
 
         // Update DB

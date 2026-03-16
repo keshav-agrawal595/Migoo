@@ -1,10 +1,12 @@
 import { db } from "@/config/db";
 import { openrouter } from "@/config/openrouter";
 import { shortVideoSeries, shortVideoAssets } from "@/config/schema";
-import { putWithRotation } from "@/lib/blob";
-import { generateLucidOriginImage, LUCID_ORIGIN_STYLES } from "@/lib/leonardo";
-import { eq } from "drizzle-orm";
+import { putWithRotation, getBlobToken } from "@/lib/blob";
+import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
+import { getMusicUrl } from "@/lib/music-urls";
+import { eq, and, or } from "drizzle-orm";
 import { inngest } from "./client";
+import { triggerRender } from "@/lib/video-render";
 
 // ─── Sarvam TTS helpers (reusing patterns from lib/enhanced-tts.ts) ──────────
 
@@ -140,7 +142,27 @@ async function updateSeriesStatus(seriesId: string, status: string) {
 }
 
 export const generateShortVideo = inngest.createFunction(
-    { id: "generate-short-video" },
+    { 
+        id: "generate-short-video",
+        onFailure: async ({ error, event, step }) => {
+            const seriesId = event?.data?.event?.data?.seriesId;
+            if (seriesId) {
+                console.error(`❌ Generation job failed or cancelled for series: ${seriesId}`, error);
+                await updateSeriesStatus(seriesId, "completed"); // Reset status to hide generating UI
+
+                // Also clean up any video assets stuck in processing/rendering
+                await db.update(shortVideoAssets)
+                    .set({ status: "failed" })
+                    .where(and(
+                        eq(shortVideoAssets.seriesId, seriesId),
+                        or(
+                            eq(shortVideoAssets.status, "processing"),
+                            eq(shortVideoAssets.status, "rendering")
+                        )
+                    ));
+            }
+        }
+    },
     { event: "shorts/generate.video" },
     async ({ event, step }) => {
         const { seriesId } = event.data;
@@ -184,6 +206,8 @@ export const generateShortVideo = inngest.createFunction(
 
             const systemPrompt = `You are an expert short-form video scriptwriter. You create viral, engaging scripts for platforms like YouTube Shorts, Instagram Reels, and TikTok. Your scripts sound natural and conversational — perfect for voiceover narration. You always respond in pure JSON only.
 
+CRITICAL RULE: Write the 'narration' text ENTIRELY in ${seriesData.language === 'en-IN' ? 'English' : 'the target language script (e.g., Hindi, Punjabi) as requested'}. The voiceover MUST be in the script of the selected language.
+
 CRITICAL RULE: The narration text you write will be converted to speech using a TTS engine that speaks at approximately 2.5 words per second. You MUST write enough words to fill the requested duration. Count your words carefully.`;
 
             const userPrompt = `Create a short video script for the following:
@@ -193,6 +217,7 @@ CRITICAL RULE: The narration text you write will be converted to speech using a 
 - **Video Style**: ${seriesData.videoStyle}
 - **Target Duration**: ${durationLabel}
 - **Platform**: ${seriesData.platform}
+- **Language**: ${seriesData.language} (Write narration ENTIRELY in this language's script)
 
 ═══ WORD COUNT REQUIREMENTS (VERY IMPORTANT) ═══
 The TTS engine speaks at ~2.5 words per second. To fill ${durationLabel}, you MUST write:
@@ -210,7 +235,7 @@ REQUIREMENTS:
 3. Create exactly **${sceneCount} scenes**. Each scene MUST have:
    - "sceneNumber": the scene index (1, 2, 3, ...)
    - "narration": the voiceover text for this scene (${perSceneWordsMin}-${perSceneWordsMax} words MINIMUM per scene)
-   - "imagePrompt": a detailed, vivid image generation prompt (40-60 words) matching the "${seriesData.videoStyle}" style. Be specific about colors, composition, mood, lighting, and subject.
+   - "imagePrompt": a detailed, vivid image generation prompt (40-60 words) matching the "${seriesData.videoStyle}" style. Use specific architectural terms, atmospheric lighting, and accurate historical details (e.g., if mentioning the Golden Temple, describe the specific marble, gold plating, and Amrit Sarovar lake accurately). Be specific about colors, composition, mood, and lighting.
    - "duration": estimated seconds for this scene when spoken at 2.5 words/sec
    - "wordCount": the exact word count of the narration text for this scene
 4. Include a "totalWordCount" field with the sum of all scene word counts.
@@ -546,27 +571,27 @@ Return the response in this exact JSON format:
         // Update status: generating images
         await step.run("update-status-images", () => updateSeriesStatus(seriesId, "generating:images"));
 
-        // Step 5: Generate Images using Leonardo Lucid Origin
+        // Step 5: Generate Images using Leonardo Nano Banana 2
         const imageData = await step.run("generate-images", async () => {
             console.log(`🖼️ Generating images for: "${seriesData.title}"`);
             console.log(`📸 Scenes to generate: ${scriptData.scenes?.length}`);
 
             // Map video style to a Leonardo style UUID
             const styleMap: Record<string, string> = {
-                "cinematic": LUCID_ORIGIN_STYLES["Cinematic"],
-                "realistic": LUCID_ORIGIN_STYLES["Stock Photo"],
-                "anime": LUCID_ORIGIN_STYLES["Creative"],
-                "3d": LUCID_ORIGIN_STYLES["Dynamic"],
-                "watercolor": LUCID_ORIGIN_STYLES["Creative"],
-                "comic": LUCID_ORIGIN_STYLES["Vibrant"],
-                "minimal": LUCID_ORIGIN_STYLES["Minimalist"],
-                "neon": LUCID_ORIGIN_STYLES["Vibrant"],
-                "vintage": LUCID_ORIGIN_STYLES["Retro"],
-                "dark": LUCID_ORIGIN_STYLES["Moody"],
+                "cinematic": NANO_BANANA_STYLES["Portrait Cinematic"],
+                "realistic": NANO_BANANA_STYLES["Stock Photo"],
+                "anime": NANO_BANANA_STYLES["Creative"],
+                "3d": NANO_BANANA_STYLES["3D Render"],
+                "watercolor": NANO_BANANA_STYLES["Watercolor"],
+                "comic": NANO_BANANA_STYLES["Illustration"],
+                "minimal": NANO_BANANA_STYLES["Creative"],
+                "neon": NANO_BANANA_STYLES["Dynamic"],
+                "vintage": NANO_BANANA_STYLES["Portrait Fashion"],
+                "dark": NANO_BANANA_STYLES["Portrait Cinematic"],
             };
 
             const videoStyleLower = (seriesData.videoStyle || "").toLowerCase();
-            const selectedStyle = styleMap[videoStyleLower] || LUCID_ORIGIN_STYLES["Dynamic"];
+            const selectedStyle = styleMap[videoStyleLower] || NANO_BANANA_STYLES["Dynamic"];
             console.log(`🎨 Style: ${seriesData.videoStyle} → ${selectedStyle}`);
 
             // Generate images sequentially (one per scene) with rate-limiting
@@ -580,17 +605,18 @@ Return the response in this exact JSON format:
                 console.log(`🖼️ Scene ${i + 1}/${scriptData.scenes.length}: "${prompt.substring(0, 80)}..."`);
 
                 try {
-                    const imageUrl = await generateLucidOriginImage(
+                    const imageUrl = await generateNanoBananaImage(
                         prompt,
                         768,    // width (portrait for shorts)
                         1376,   // height
-                        selectedStyle,
-                        3.5     // contrast: medium
+                        selectedStyle
                     );
                     imageUrls.push(imageUrl);
                     console.log(`✅ Scene ${i + 1} image: ${imageUrl.substring(0, 60)}...`);
                 } catch (err: any) {
-                    console.error(`❌ Scene ${i + 1} image failed: ${err.message}`);
+                    console.error(`❌ Scene ${i + 1} image FAILED — Full error below:`);
+                    console.error(err?.message || err);
+                    // Do NOT swallow silently — surface the real error in Inngest logs
                     imageUrls.push(""); // push empty so indices stay aligned
                 }
 
@@ -608,16 +634,34 @@ Return the response in this exact JSON format:
             return { imageUrls };
         });
 
-        // Update status: saving
-        await step.run("update-status-saving", () => updateSeriesStatus(seriesId, "generating:saving"));
+        // Update status: video
+        await step.run("update-status-video", () => updateSeriesStatus(seriesId, "generating:video"));
 
-        // Step 6: Save everything to DB
-        const saveResult = await step.run("save-to-db", async () => {
-            console.log(`💾 Saving all generated data for: "${seriesData.title}"`);
+        // Step 5: (Implicitly handled by previous steps being done)
+        const assetPreparation = await step.run("prepare-assets", async () => {
+            console.log(`✅ Assets prepared for: "${seriesData.title}"`);
+            return { ready: true };
+        });
 
+        // Update status: render
+        await step.run("update-status-render", () => updateSeriesStatus(seriesId, "generating:render"));
+
+        // Step 6: Trigger MP4 rendering & Save Initial Record
+        const videoResult = await step.run("render-and-save", async () => {
             const videoId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const musicUrl = getMusicUrl(seriesData.music);
+            const props = {
+                imageUrls: imageData.imageUrls,
+                audioUrl: voiceData.audioUrl,
+                musicUrl,
+                captionData: captionData,
+                captionStyle: seriesData.captionStyle,
+                language: seriesData.language || 'en-IN',
+                durationInFrames: Math.floor((voiceData.audioDuration || 60) * 30),
+            };
 
-            // Insert into shortVideoAssets table
+            console.log(`💾 Saving initial video assets for: ${videoId}`);
+            // Insert into shortVideoAssets table first
             await db.insert(shortVideoAssets).values({
                 videoId,
                 seriesId: seriesData.seriesId,
@@ -627,10 +671,22 @@ Return the response in this exact JSON format:
                 audioDuration: voiceData.audioDuration,
                 captionData: captionData,
                 imageUrls: imageData.imageUrls,
-                status: "completed",
+                status: "processing", // Initial status
             });
 
-            console.log(`✅ Video assets saved with ID: ${videoId}`);
+            // Trigger actual render
+            const result = await triggerRender(videoId, props);
+            console.log(`🎬 Render triggered (${result.mode} mode) for ${videoId}`);
+            
+            return { videoId, mode: result.mode };
+        });
+
+        // Update status: saving
+        await step.run("update-status-saving", () => updateSeriesStatus(seriesId, "generating:saving"));
+
+        // Step 7: Finalize Series Status
+        const saveResult = await step.run("finalize-series", async () => {
+            console.log(`🏁 Finalizing series: "${seriesData.title}"`);
 
             // Update series status to completed
             await db.update(shortVideoSeries)
@@ -639,7 +695,7 @@ Return the response in this exact JSON format:
 
             console.log(`✅ Series status updated to completed`);
 
-            return { saved: true, videoId };
+            return { saved: true, videoId: videoResult.videoId };
         });
 
         return {

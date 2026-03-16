@@ -21,6 +21,15 @@ if (BLOB_TOKENS.length === 0) {
 console.log(`🔄 Blob rotation loaded: ${BLOB_TOKENS.length} accounts available`);
 
 /**
+ * Returns a random valid token from the list.
+ */
+export function getBlobToken(): string {
+    if (BLOB_TOKENS.length === 0) return "";
+    const idx = Math.floor(Math.random() * BLOB_TOKENS.length);
+    return BLOB_TOKENS[idx];
+}
+
+/**
  * Pick a random starting index, then try each token in order.
  * If a put() fails (e.g. quota exceeded), skip to the next token.
  * Throws only if ALL tokens fail.
