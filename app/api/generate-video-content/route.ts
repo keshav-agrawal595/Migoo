@@ -1,12 +1,28 @@
+/**
+ * @module api/generate-video-content
+ * @description API route for generating video content (slides, audio, captions) for a course chapter.
+ *
+ * POST /api/generate-video-content
+ * Takes a chapter definition and generates presentation slides with TTS audio,
+ * captions via STT, and saves everything to the database.
+ *
+ * @requires Authentication via Clerk (recommended)
+ * @requires OpenRouter API key for slide generation
+ * @requires Sarvam API key for TTS/STT
+ * @requires Vercel Blob for audio storage
+ */
+
 import { db } from "@/config/db";
 import { openrouter } from "@/config/openrouter";
 import { sarvam } from "@/config/sarvam";
 import { chapterContentSlides, courseImages } from "@/config/schema";
 import { GENERATE_VIDEO_PROMPT } from "@/data/Prompt";
+import { apiError, apiSuccess } from "@/lib/api-helpers";
+import { validateInput, generateVideoContentSchema } from "@/lib/validations";
 import { putWithRotation } from "@/lib/blob";
 import { deleteSlidesContent, loadSlidesContent, saveSlidesContent } from "@/lib/content-cache";
 import { eq } from "drizzle-orm";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 🧪 TESTING MODE CONFIGURATION
@@ -383,7 +399,16 @@ async function generateCaptions(audioUrl: string, languageCode: string = "en-IN"
 
 export async function POST(req: NextRequest) {
     try {
-        const { chapter, courseId, courseName, chapterIndex } = await req.json();
+        // Validate request body with Zod schema
+        const body = await req.json();
+        const validation = validateInput(generateVideoContentSchema, body);
+
+        if (!validation.success) {
+            console.error('❌ Validation Error:', validation.errors);
+            return apiError('Invalid request input', 400, 'VALIDATION_ERROR', validation.errors);
+        }
+
+        const { chapter, courseId, courseName, chapterIndex } = validation.data;
 
         console.log('\n' + '═'.repeat(80));
         console.log('🎬 VIDEO CONTENT GENERATION');
@@ -396,8 +421,7 @@ export async function POST(req: NextRequest) {
         // Testing Mode Check
         if (TESTING_MODE && chapterIndex !== TEST_CHAPTER_INDEX) {
             console.log(`⏭️ Skipping chapter ${chapterIndex} (testing mode)`);
-            return NextResponse.json({
-                success: true,
+            return apiSuccess({
                 skipped: true,
                 reason: `Testing mode: only processing chapter ${TEST_CHAPTER_INDEX}`
             });
@@ -411,9 +435,8 @@ export async function POST(req: NextRequest) {
 
         if (existingSlides.length > 0) {
             console.log(`✅ Slides already exist (${existingSlides.length})`);
-            return NextResponse.json({
-                success: true,
-                data: existingSlides,
+            return apiSuccess({
+                slides: existingSlides,
                 skipped: true,
                 message: 'Slides already exist for this chapter'
             });
@@ -426,13 +449,11 @@ export async function POST(req: NextRequest) {
             console.log('✅ OpenRouter connected');
         } catch (error: any) {
             console.error('❌ OpenRouter connection failed:', error.message);
-            return NextResponse.json(
-                {
-                    success: false,
-                    error: 'OpenRouter API connection failed',
-                    details: error.message
-                },
-                { status: 500 }
+            return apiError(
+                'OpenRouter API connection failed',
+                500,
+                'API_CONNECTION_ERROR',
+                error.message
             );
         }
 
@@ -533,14 +554,11 @@ export async function POST(req: NextRequest) {
             } catch (error: any) {
                 console.error('❌ OpenRouter generation failed:', error.message);
                 console.error('Stack trace:', error.stack);
-                return NextResponse.json(
-                    {
-                        success: false,
-                        error: 'Failed to generate slides',
-                        details: error.message,
-                        suggestion: 'Check the console logs for detailed error information'
-                    },
-                    { status: 500 }
+                return apiError(
+                    'Failed to generate slides',
+                    500,
+                    'GENERATION_ERROR',
+                    error.message
                 );
             }
         }
@@ -762,9 +780,8 @@ export async function POST(req: NextRequest) {
         console.log(`📦 Content source: ${contentFromCache ? 'cached' : 'fresh LLM generation'}`);
         console.log('═'.repeat(80) + '\n');
 
-        return NextResponse.json({
-            success: true,
-            data: insertedSlides,
+        return apiSuccess({
+            slides: insertedSlides,
             metadata: {
                 generatedAt: new Date().toISOString(),
                 model: usedModel,
@@ -790,13 +807,11 @@ export async function POST(req: NextRequest) {
         console.error('Stack:', error.stack);
         console.error('═'.repeat(80) + '\n');
 
-        return NextResponse.json(
-            {
-                success: false,
-                error: error.message || 'Failed to generate video content',
-                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            },
-            { status: 500 }
+        return apiError(
+            error.message || 'Failed to generate video content',
+            500,
+            'GENERATION_ERROR',
+            error.stack
         );
     }
 }

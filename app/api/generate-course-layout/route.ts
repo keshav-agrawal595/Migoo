@@ -1,9 +1,23 @@
+/**
+ * @module api/generate-course-layout
+ * @description API route for generating AI-powered course layouts.
+ *
+ * POST /api/generate-course-layout
+ * Takes user input and generates a comprehensive course structure
+ * using OpenRouter AI, then saves it to the database.
+ *
+ * @requires Authentication via Clerk
+ * @requires OpenRouter API key
+ */
+
 import { db } from "@/config/db";
 import { openrouter } from "@/config/openrouter";
 import { coursesTable } from "@/config/schema";
 import { COURSE_CONFIG_PROMPT } from "@/data/Prompt";
+import { apiError, apiSuccess, apiOptions } from "@/lib/api-helpers";
+import { validateInput, generateCourseLayoutSchema } from "@/lib/validations";
 import { currentUser } from "@clerk/nextjs/server";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
     const user = await currentUser();
@@ -14,53 +28,27 @@ export async function POST(req: NextRequest) {
     console.log('📅 Timestamp:', new Date().toISOString());
 
     try {
-        // Parse request body
+        // Auth guard
+        if (!user?.primaryEmailAddress?.emailAddress) {
+            return apiError('Authentication required', 401, 'UNAUTHORIZED');
+        }
+
+        // Parse and validate request body with Zod
         const body = await req.json();
-        const { userInput, courseId, type } = body;
+        const validation = validateInput(generateCourseLayoutSchema, body);
+
+        if (!validation.success) {
+            console.error('❌ Validation Error:', validation.errors);
+            return apiError('Invalid request input', 400, 'VALIDATION_ERROR', validation.errors);
+        }
+
+        const { userInput, courseId, type } = validation.data;
 
         console.log('📥 Request Body:', {
-            userInputLength: userInput?.length,
+            userInputLength: userInput.length,
             courseId,
             type,
-            bodyKeys: Object.keys(body)
         });
-
-        console.log('📋 User Input:', userInput);
-
-        // ═══════════════════════════════════════════════════════════════════
-        // Validate input
-        // ═══════════════════════════════════════════════════════════════════
-        if (!userInput) {
-            console.error('❌ Validation Error: userInput is required');
-            return NextResponse.json(
-                { error: 'userInput is required' },
-                { status: 400 }
-            );
-        }
-
-        if (!courseId) {
-            console.error('❌ Validation Error: courseId is required');
-            return NextResponse.json(
-                { error: 'courseId is required' },
-                { status: 400 }
-            );
-        }
-
-        if (!type) {
-            console.error('❌ Validation Error: type is required');
-            return NextResponse.json(
-                { error: 'type is required' },
-                { status: 400 }
-            );
-        }
-
-        if (!user?.primaryEmailAddress?.emailAddress) {
-            console.error('❌ Validation Error: User not authenticated');
-            return NextResponse.json(
-                { error: 'User not authenticated' },
-                { status: 401 }
-            );
-        }
 
         // ═══════════════════════════════════════════════════════════════════
         // Test API connection
@@ -71,13 +59,11 @@ export async function POST(req: NextRequest) {
             console.log('✅ OpenRouter API connection successful');
         } catch (error: any) {
             console.error('❌ OpenRouter API Connection Test Failed:', error.message);
-            return NextResponse.json(
-                {
-                    error: 'OpenRouter API connection failed',
-                    details: error.message,
-                    suggestion: 'Check your OPENROUTER_API_KEY in .env.local'
-                },
-                { status: 500 }
+            return apiError(
+                'OpenRouter API connection failed',
+                500,
+                'API_CONNECTION_ERROR',
+                error.message
             );
         }
 
@@ -187,9 +173,8 @@ export async function POST(req: NextRequest) {
         console.log(`Course ID: ${courseId}`);
         console.log('═'.repeat(80) + '\n');
 
-        return NextResponse.json({
-            success: true,
-            data: courseResult[0],
+        return apiSuccess({
+            course: courseResult[0],
             metadata: {
                 generatedAt: new Date().toISOString(),
                 model: 'z-ai/glm-4.5-air:free',
@@ -217,25 +202,16 @@ export async function POST(req: NextRequest) {
         }
         console.error('═'.repeat(80) + '\n');
 
-        return NextResponse.json(
-            {
-                error: 'Failed to generate course layout',
-                details: error.message,
-                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            },
-            { status: 500 }
+        return apiError(
+            'Failed to generate course layout',
+            500,
+            'GENERATION_ERROR',
+            error.message
         );
     }
 }
 
-// Add OPTIONS method for CORS
+/** Handle CORS preflight requests */
 export async function OPTIONS() {
-    return new NextResponse(null, {
-        status: 200,
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-    });
+    return apiOptions();
 }
