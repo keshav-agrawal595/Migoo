@@ -10,6 +10,7 @@ import {
     FileText,
     Image as ImageIcon,
     Loader2,
+    MessageSquarePlus,
     Mic,
     Play,
     Sparkles,
@@ -88,6 +89,7 @@ function SeriesVideosPageContent() {
     const [triggeringGeneration, setTriggeringGeneration] = useState(false)
     const [selectedVideo, setSelectedVideo] = useState<VideoAsset | null>(null)
     const [resettingStatus, setResettingStatus] = useState(false)
+    const [showTopicDialog, setShowTopicDialog] = useState(false)
     const hasTriggeredGenerate = useRef(false)
 
     // ─── Fetch series + videos ───────────────────────────────────────
@@ -172,17 +174,17 @@ function SeriesVideosPageContent() {
     }
 
     // ─── Trigger generation ──────────────────────────────────────────
-    const handleGenerate = async () => {
+    const handleGenerate = async (customTopic?: string) => {
         setTriggeringGeneration(true)
         try {
             const res = await fetch('/api/short-series/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ seriesId }),
+                body: JSON.stringify({ seriesId, ...(customTopic ? { customTopic } : {}) }),
             })
             const data = await res.json()
             if (data.success) {
-                toast.success('Video generation started!')
+                toast.success(customTopic ? `Generating video about: "${customTopic}"` : 'Video generation started!')
                 setGenerating(true)
                 setTimeout(fetchData, 2000)
             } else {
@@ -262,7 +264,7 @@ function SeriesVideosPageContent() {
                     </div>
 
                     <button
-                        onClick={handleGenerate}
+                        onClick={() => setShowTopicDialog(true)}
                         disabled={generating || triggeringGeneration}
                         className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-linear-to-r from-primary to-accent text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:scale-[1.02] transition-all duration-200 disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
                     >
@@ -301,7 +303,7 @@ function SeriesVideosPageContent() {
                         Click &ldquo;Generate More&rdquo; to create your first AI-generated short video for this series
                     </p>
                     <button
-                        onClick={handleGenerate}
+                        onClick={() => setShowTopicDialog(true)}
                         disabled={triggeringGeneration}
                         className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold bg-linear-to-r from-primary to-accent text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:scale-[1.02] transition-all cursor-pointer disabled:opacity-70"
                     >
@@ -534,7 +536,156 @@ function SeriesVideosPageContent() {
                 series={series}
                 onClose={() => setSelectedVideo(null)}
             />
+
+            {/* Generate Topic Dialog */}
+            <GenerateTopicDialog
+                open={showTopicDialog}
+                onClose={() => setShowTopicDialog(false)}
+                onGenerate={(customTopic) => {
+                    setShowTopicDialog(false)
+                    handleGenerate(customTopic)
+                }}
+                seriesNiche={series.niche}
+                disabled={triggeringGeneration}
+            />
         </div>
+    )
+}
+
+function GenerateTopicDialog({
+    open,
+    onClose,
+    onGenerate,
+    seriesNiche,
+    disabled,
+}: {
+    open: boolean
+    onClose: () => void
+    onGenerate: (customTopic?: string) => void
+    seriesNiche: string
+    disabled: boolean
+}) {
+    const [mode, setMode] = useState<'choose' | 'custom'>('choose')
+    const [customTopic, setCustomTopic] = useState('')
+
+    // Reset state when dialog opens
+    useEffect(() => {
+        if (open) {
+            setMode('choose')
+            setCustomTopic('')
+        }
+    }, [open])
+
+    return (
+        <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+            <Dialog.Portal>
+                <Dialog.Overlay className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 animate-in fade-in duration-200" />
+                <Dialog.Content className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md z-50 outline-none animate-in fade-in zoom-in-95 duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl border border-border/40 overflow-hidden">
+                        {/* Header */}
+                        <div className="px-6 pt-6 pb-4">
+                            <div className="flex items-center gap-3 mb-1">
+                                <div className="w-10 h-10 rounded-xl bg-linear-to-br from-primary/15 to-accent/15 flex items-center justify-center">
+                                    <Sparkles className="w-5 h-5 text-primary" />
+                                </div>
+                                <div>
+                                    <Dialog.Title className="text-lg font-bold text-foreground">
+                                        Generate New Video
+                                    </Dialog.Title>
+                                    <Dialog.Description className="text-xs text-muted-foreground">
+                                        Choose how to pick the topic for your next video
+                                    </Dialog.Description>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Options */}
+                        <div className="px-6 pb-6 space-y-3">
+                            {mode === 'choose' ? (
+                                <>
+                                    {/* Option 1: AI Random */}
+                                    <button
+                                        onClick={() => onGenerate()}
+                                        disabled={disabled}
+                                        className="w-full group flex items-start gap-4 p-4 rounded-xl border-2 border-border/50 hover:border-primary/40 bg-linear-to-br from-violet-50/50 to-purple-50/50 hover:from-violet-50 hover:to-purple-50 transition-all duration-200 text-left cursor-pointer disabled:opacity-60"
+                                    >
+                                        <div className="w-11 h-11 rounded-xl bg-linear-to-br from-violet-500 to-purple-600 flex items-center justify-center shrink-0 shadow-md shadow-violet-500/20 group-hover:scale-105 transition-transform">
+                                            <Wand2 className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <span className="font-semibold text-sm text-foreground block">Let AI Choose</span>
+                                            <span className="text-xs text-muted-foreground leading-relaxed">
+                                                AI picks a unique, viral-worthy angle from your &ldquo;{seriesNiche}&rdquo; niche
+                                            </span>
+                                        </div>
+                                    </button>
+
+                                    {/* Option 2: Custom Topic */}
+                                    <button
+                                        onClick={() => setMode('custom')}
+                                        disabled={disabled}
+                                        className="w-full group flex items-start gap-4 p-4 rounded-xl border-2 border-border/50 hover:border-primary/40 bg-linear-to-br from-blue-50/50 to-cyan-50/50 hover:from-blue-50 hover:to-cyan-50 transition-all duration-200 text-left cursor-pointer disabled:opacity-60"
+                                    >
+                                        <div className="w-11 h-11 rounded-xl bg-linear-to-br from-blue-500 to-cyan-600 flex items-center justify-center shrink-0 shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
+                                            <MessageSquarePlus className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <span className="font-semibold text-sm text-foreground block">Choose My Own Topic</span>
+                                            <span className="text-xs text-muted-foreground leading-relaxed">
+                                                Type a specific topic you want the video to be about
+                                            </span>
+                                        </div>
+                                    </button>
+                                </>
+                            ) : (
+                                /* Custom Topic Input */
+                                <motion.div
+                                    initial={{ opacity: 0, y: 10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="space-y-3"
+                                >
+                                    <div>
+                                        <label className="text-sm font-medium text-foreground mb-1.5 block">
+                                            What should this video be about?
+                                        </label>
+                                        <textarea
+                                            value={customTopic}
+                                            onChange={(e) => setCustomTopic(e.target.value)}
+                                            placeholder={`e.g. "Top 5 myths about ${seriesNiche}" or "How ${seriesNiche} will change in 2025"`}
+                                            className="w-full px-4 py-3 rounded-xl border border-border/60 bg-muted/30 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 transition-all resize-none"
+                                            rows={3}
+                                            autoFocus
+                                        />
+                                    </div>
+
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => setMode('choose')}
+                                            className="flex-1 h-11 rounded-xl border border-border/60 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all cursor-pointer"
+                                        >
+                                            ← Back
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                if (customTopic.trim()) {
+                                                    onGenerate(customTopic.trim())
+                                                }
+                                            }}
+                                            disabled={disabled || !customTopic.trim()}
+                                            className="flex-1 h-11 rounded-xl bg-linear-to-r from-primary to-accent text-white text-sm font-semibold shadow-lg shadow-primary/20 hover:shadow-xl hover:scale-[1.02] transition-all disabled:opacity-60 disabled:hover:scale-100 cursor-pointer flex items-center justify-center gap-2"
+                                        >
+                                            <Sparkles className="w-4 h-4" />
+                                            Generate
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </div>
+                    </div>
+                </Dialog.Content>
+            </Dialog.Portal>
+        </Dialog.Root>
     )
 }
 

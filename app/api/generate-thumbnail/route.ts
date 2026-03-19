@@ -1,6 +1,6 @@
 import { db } from "@/config/db";
 import { coursesTable } from "@/config/schema";
-import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
+import { generateRunwayImage } from "@/lib/runway";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
@@ -184,22 +184,11 @@ export async function POST(req: NextRequest) {
         const prompt = buildThumbnailPrompt(courseName);
         console.log('📸 Thumbnail prompt:', prompt);
 
-        // Pick a visually striking style for high-quality thumbnails (Randomly shuffled)
-        const aestheticStyles = [
-            NANO_BANANA_STYLES["Portrait Cinematic"],
-            NANO_BANANA_STYLES["3D Render"],
-            NANO_BANANA_STYLES["Graphic Design 3D"],
-            NANO_BANANA_STYLES["Ray Traced"],
-            NANO_BANANA_STYLES["Stock Photo"],
-            NANO_BANANA_STYLES["Dynamic"]
-        ];
-        const selectedStyle = aestheticStyles[Math.floor(Math.random() * aestheticStyles.length)];
+        // Generate via RunwayML Gemini 2.5 Flash — 1344:768 landscape for course thumbnails
+        console.log(`📸 Calling RunwayML Gemini 2.5 Flash (1344:768, auto-rotating keys)...`);
 
-        // 1200×896 — valid 4:3 pair for Nano Banana 2, perfect landscape for course thumbnails
-        console.log(`📸 Calling Nano Banana 2 (Style: ${selectedStyle}, 1200×896, auto-rotating keys)...`);
-
-        const signedUrl = await generateNanoBananaImage(prompt, 1200, 896, selectedStyle);
-        console.log(`✅ Leonardo returned URL: ${signedUrl.substring(0, 80)}...`);
+        const signedUrl = await generateRunwayImage(prompt, "1344:768");
+        console.log(`✅ RunwayML returned URL: ${signedUrl.substring(0, 80)}...`);
 
         // ═════════════════════════════════════════════════════════════════
         // DOWNLOAD & PERSIST LOCALLY
@@ -222,7 +211,7 @@ export async function POST(req: NextRequest) {
             thumbnailUrl: localPath,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'nano-banana-2',
+                engine: 'runway-gemini-2.5-flash',
                 courseId,
                 prompt: prompt.substring(0, 200)
             }

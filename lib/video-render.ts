@@ -17,12 +17,22 @@ export async function triggerRender(videoId: string, props: Record<string, any>)
 
     if (isLocal) {
         console.log(`🎬 Starting LOCAL render for: ${videoId}`);
+
+        // Guard: Don't re-render if already rendering or completed
+        const [existing] = await db.select().from(shortVideoAssets).where(eq(shortVideoAssets.videoId, videoId));
+        if (existing && (existing.status === 'rendering')) {
+            console.log(`⚠️ Video ${videoId} is already rendering. Skipping duplicate render.`);
+            return { success: true, mode: 'local', skipped: true };
+        }
+        if (existing && existing.status === 'completed' && existing.videoUrl) {
+            console.log(`⚠️ Video ${videoId} is already rendered. Skipping.`);
+            return { success: true, mode: 'local', skipped: true };
+        }
+
         // Mark as rendering immediately
         await db.update(shortVideoAssets).set({ status: 'rendering' }).where(eq(shortVideoAssets.videoId, videoId));
         
-        // Return the promise or handle it as fire-and-forget
-        // For Inngest, we might want to wait if it's a short process, 
-        // but Remotion can take minutes. Fire-and-forget is safer for serverless.
+        // Fire-and-forget local render
         renderLocally(videoId, props).catch((err) => {
             console.error(`❌ Local render failed for ${videoId}:`, err);
         });
@@ -90,7 +100,7 @@ async function renderLocally(videoId: string, props: Record<string, any>) {
     // Use forward slashes for CLI compatibility
     const propsArg = propsPath.replace(/\\/g, '/');
     const outputArg = outputPath.replace(/\\/g, '/');
-    const command = `npx remotion render MainVideo "${outputArg}" --props="${propsArg}" --duration=${props.durationInFrames}`;
+    const command = `npx remotion render MainVideo "${outputArg}" --props="${propsArg}" --duration=${props.durationInFrames} --timeout=120000`;
 
     console.log(`💻 Executing: ${command}`);
 

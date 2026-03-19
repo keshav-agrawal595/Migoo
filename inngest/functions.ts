@@ -1,12 +1,14 @@
 import { db } from "@/config/db";
-import { openrouter } from "@/config/openrouter";
-import { shortVideoSeries, shortVideoAssets } from "@/config/schema";
-import { putWithRotation, getBlobToken } from "@/lib/blob";
-import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
+import { gemini } from "@/config/gemini";
+import { shortVideoAssets, shortVideoSeries } from "@/config/schema";
+import { putWithRotation } from "@/lib/blob";
 import { getMusicUrl } from "@/lib/music-urls";
-import { eq, and, or } from "drizzle-orm";
-import { inngest } from "./client";
+import { generateRunwayImage, ContentModerationError } from "@/lib/runway";
+import { generateNanoBananaImage } from "@/lib/leonardo";
 import { triggerRender } from "@/lib/video-render";
+import { and, eq, or } from "drizzle-orm";
+import { inngest } from "./client";
+
 
 // ─── Sarvam TTS helpers (reusing patterns from lib/enhanced-tts.ts) ──────────
 
@@ -142,8 +144,14 @@ async function updateSeriesStatus(seriesId: string, status: string) {
 }
 
 export const generateShortVideo = inngest.createFunction(
-    { 
+    {
         id: "generate-short-video",
+        cancelOn: [
+            {
+                event: "shorts/generate.cancel",
+                match: "data.seriesId"
+            }
+        ],
         onFailure: async ({ error, event, step }) => {
             const seriesId = event?.data?.event?.data?.seriesId;
             if (seriesId) {
@@ -165,7 +173,7 @@ export const generateShortVideo = inngest.createFunction(
     },
     { event: "shorts/generate.video" },
     async ({ event, step }) => {
-        const { seriesId } = event.data;
+        const { seriesId, customTopic } = event.data;
 
         // Step 1: Fetch series from DB
         const seriesData = await step.run("fetch-series", async () => {
@@ -185,118 +193,166 @@ export const generateShortVideo = inngest.createFunction(
         // Update status: generating script
         await step.run("update-status-script", () => updateSeriesStatus(seriesId, "generating:script"));
 
-        // Step 2: Generate Video Script using AI
+        // Step 2: Generate Video Script using Sarvam-105B
         const scriptData = await step.run("generate-video-script", async () => {
             console.log(`📝 Generating video script for: "${seriesData.title}"`);
 
-            const isShort = seriesData.duration === "30-40";
-            const sceneCount = isShort ? 5 : 6;
-            const durationLabel = isShort ? "30-40 seconds" : "60-70 seconds";
+            // ── Always target 80-120 seconds for engaging short videos ──
+            const sceneCount = 6;
+            const durationLabel = "80-120 seconds";
 
             // ── Word-count math ──────────────────────────────────────
             // Sarvam TTS at 1.05× pace ≈ 2.5 words/sec (150 WPM)
             const WORDS_PER_SEC = 2.5;
-            const targetMinSec = isShort ? 30 : 60;
-            const targetMaxSec = isShort ? 40 : 70;
-            const totalWordsMin = Math.ceil(targetMinSec * WORDS_PER_SEC);   // 75 or 150
-            const totalWordsMax = Math.ceil(targetMaxSec * WORDS_PER_SEC);   // 100 or 175
-            const perSceneWordsMin = Math.ceil(totalWordsMin / sceneCount);   // ~15 or ~25
-            const perSceneWordsMax = Math.ceil(totalWordsMax / sceneCount);   // ~20 or ~29
+            const targetMinSec = 80;
+            const targetMaxSec = 120;
+            const totalWordsMin = Math.ceil(targetMinSec * WORDS_PER_SEC);   // 200
+            const totalWordsMax = Math.ceil(targetMaxSec * WORDS_PER_SEC);   // 300
+            const perSceneWordsMin = Math.ceil(totalWordsMin / sceneCount);   // ~34
+            const perSceneWordsMax = Math.ceil(totalWordsMax / sceneCount);   // ~50
             // ─────────────────────────────────────────────────────────
 
-            const systemPrompt = `You are an expert short-form video scriptwriter. You create viral, engaging scripts for platforms like YouTube Shorts, Instagram Reels, and TikTok. Your scripts sound natural and conversational — perfect for voiceover narration. You always respond in pure JSON only.
+            // ── Randomization seed for guaranteed uniqueness ─────────
+            const seed = Date.now();
+            const contentAngles = [
+                "a mind-blowing fact nobody talks about",
+                "a dark or hidden truth that will shock viewers",
+                "a controversial take that challenges common beliefs",
+                "an untold origin story or historical mystery",
+                "a future prediction that sounds crazy but is backed by science",
+                "a comparison that puts things into jaw-dropping perspective",
+                "a secret technique or life hack most people don't know",
+                "a story of an underdog or forgotten genius",
+                "a bizarre connection between two unrelated things",
+                "a countdown of the most insane facts about the topic",
+                "a what-if scenario that changes everything",
+                "a debunking of a popular myth with surprising evidence",
+            ];
+            const angle = contentAngles[seed % contentAngles.length];
+            const randomTopicTwist = customTopic
+                ? `SPECIFIC TOPIC (USER REQUEST): The user wants this video to be specifically about: "${customTopic}". Focus entirely on this topic. Make it engaging, viral, and packed with fascinating details. Seed: ${seed}`
+                : `UNIQUE ANGLE: Frame this video as ${angle}. Seed: ${seed}`;
+            // ─────────────────────────────────────────────────────────
 
-CRITICAL RULE: Write the 'narration' text ENTIRELY in ${seriesData.language === 'en-IN' ? 'English' : 'the target language script (e.g., Hindi, Punjabi) as requested'}. The voiceover MUST be in the script of the selected language.
+            const systemPrompt = `You are a viral storyteller. Write a ${durationLabel} script.
 
-CRITICAL RULE: The narration text you write will be converted to speech using a TTS engine that speaks at approximately 2.5 words per second. You MUST write enough words to fill the requested duration. Count your words carefully.`;
+🚨 SUPER CRITICAL RULES:
+1. Output ONLY a valid JSON object.
+2. Your JSON MUST be wrapped exactly in <json> and </json> tags.
+3. NEVER output markdown code blocks (like \`\`\`json).
 
-            const userPrompt = `Create a short video script for the following:
+SCRIPT REQUIREMENTS:
+1. TOTAL LENGTH: 250-300 words of narration.
+2. STRUCTURE: You MUST use explicit keys ("scene1", "scene2"..."scene6") instead of an array.
+3. LANGUAGE & NATIVE FLOW: Write ENTIRELY in ${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}. You MUST use natural, native-sounding phrasing. Do NOT just translate English idioms literally. The narration MUST flow seamlessly and logically from one scene to the next.
+4. NARRATION STYLE: Write a seamless, highly engaging story or compelling argument. Do NOT use meta-commentary, structural announcements, or "content framing" (e.g., NEVER say "Scene 1", "Here is a story about...", "Welcome to the video"). Start directly with the hook. The points MUST be highly interesting and directly address the user's title. Each scene must have 40-50 words (3-4 descriptive sentences).
+5. IMAGE PROMPTS: Write highly detailed, masterpiece-level image generation prompts (20-30 words) focusing on cinematic lighting, photorealism, and striking visuals. DO NOT write ugly or generic descriptions.
 
-- **Niche/Topic**: ${seriesData.niche}
-- **Series Title**: ${seriesData.title}
-- **Video Style**: ${seriesData.videoStyle}
-- **Target Duration**: ${durationLabel}
-- **Platform**: ${seriesData.platform}
-- **Language**: ${seriesData.language} (Write narration ENTIRELY in this language's script)
+JSON SCHEMA:
+Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exactly this wrapped in <json> tags:
 
-═══ WORD COUNT REQUIREMENTS (VERY IMPORTANT) ═══
-The TTS engine speaks at ~2.5 words per second. To fill ${durationLabel}, you MUST write:
-• TOTAL narration across ALL scenes: ${totalWordsMin} to ${totalWordsMax} words
-• EACH scene narration: ${perSceneWordsMin} to ${perSceneWordsMax} words minimum
-• Number of scenes: exactly ${sceneCount}
-
-If the total word count falls below ${totalWordsMin} words, the video will be TOO SHORT.
-Write detailed, descriptive, engaging narration — NOT brief bullet points.
-═══════════════════════════════════════════════════
-
-REQUIREMENTS:
-1. Write a catchy, attention-grabbing **videoTitle** for this specific video.
-2. Write a natural, conversational narration that sounds great when spoken aloud. Use dramatic pauses (with commas and ellipses), rhetorical questions, hooks, and storytelling flow. Avoid robotic or overly formal language.
-3. Create exactly **${sceneCount} scenes**. Each scene MUST have:
-   - "sceneNumber": the scene index (1, 2, 3, ...)
-   - "narration": the voiceover text for this scene (${perSceneWordsMin}-${perSceneWordsMax} words MINIMUM per scene)
-   - "imagePrompt": a detailed, vivid image generation prompt (40-60 words) matching the "${seriesData.videoStyle}" style. Use specific architectural terms, atmospheric lighting, and accurate historical details (e.g., if mentioning the Golden Temple, describe the specific marble, gold plating, and Amrit Sarovar lake accurately). Be specific about colors, composition, mood, and lighting.
-   - "duration": estimated seconds for this scene when spoken at 2.5 words/sec
-   - "wordCount": the exact word count of the narration text for this scene
-4. Include a "totalWordCount" field with the sum of all scene word counts.
-
-IMPORTANT:
-- The total word count MUST be between ${totalWordsMin} and ${totalWordsMax}.
-- Each scene's "duration" should equal its wordCount / 2.5 (rounded to nearest integer).
-- The script must hook the viewer in the first 2 seconds.
-- Return ONLY valid JSON, no markdown, no extra text.
-
-Return the response in this exact JSON format:
+<json>
 {
-  "videoTitle": "Catchy Video Title Here",
+  "videoTitle": "compelling viral title",
   "totalScenes": ${sceneCount},
-  "totalWordCount": ${totalWordsMin},
-  "scenes": [
-    {
-      "sceneNumber": 1,
-      "narration": "Write a long, detailed, natural voiceover narration here with at least ${perSceneWordsMin} words...",
-      "imagePrompt": "Detailed image description for AI generation...",
-      "duration": ${Math.round(perSceneWordsMin / WORDS_PER_SEC)},
-      "wordCount": ${perSceneWordsMin}
-    }
-  ]
-}`;
+  "totalWordCount": 250,
+  "scene1": {
+    "narration": "Gripping segment with NO intro framing (40-50 words)...",
+    "imagePrompt": "Cinematic, photorealistic masterpiece visual description...",
+    "duration": 15,
+    "wordCount": 45
+  },
+  "scene2": {
+    "narration": "Seamlessly continuing segment...",
+    "imagePrompt": "Next cinematic visual...",
+    "duration": 15,
+    "wordCount": 45
+  },
+  "scene3": { ... },
+  "scene4": { ... },
+  "scene5": { ... },
+  "scene6": { ... }
+}
+</json>
+
+🚨 CRITICAL: Finish all ${sceneCount} scenes. Output ONLY <json>{...}</json>.`;
+
+            const userPrompt = `Topic: "${seriesData.title}"
+${randomTopicTwist}
+
+ACT AS A PROFESSIONAL WRITER: 
+Compose a high-retention, EXACTLY 6-scene script for this topic. 
+You MUST provide 250+ total words of narration across all 6 scenes. 
+You MUST use explicit keys (scene1, scene2, etc.). Do NOT use an array for scenes.
+Do NOT use any "content framing" (like "Let's explore", "Scene 1"). Just write the pure narration.
+Do NOT be brief. Do NOT stop early.
+
+OUTPUT REQUIREMENT:
+Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
 
             // ── Generate with validation + retry ─────────────────────
-            const MAX_ATTEMPTS = 2;
+            const MAX_ATTEMPTS = 3;
             let bestResult: any = null;
             let bestWordCount = 0;
 
             for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-                console.log(`🔄 Script generation attempt ${attempt}/${MAX_ATTEMPTS}...`);
+                console.log(`🔄 Script generation attempt ${attempt}/${MAX_ATTEMPTS} (Gemini 2.5 Flash)...`);
 
-                const result = await openrouter.json(systemPrompt, userPrompt, {
-                    model: "arcee-ai/trinity-large-preview:free",
-                    temperature: attempt === 1 ? 0.8 : 0.9,
-                    maxTokens: 5000,
-                });
+                try {
+                    const result = await gemini.json(systemPrompt, userPrompt, {
+                        temperature: attempt === 1 ? 0.75 : 0.85,
+                        maxOutputTokens: 8192,
+                    });
 
-                // Count actual words across all scenes
-                const actualWordCount = result.scenes?.reduce(
-                    (sum: number, s: any) => sum + (s.narration?.split(/\s+/).length || 0),
-                    0
-                ) || 0;
+                    // ── Map explicit keys back to scenes array ────────────────
+                    if (!result.scenes || !Array.isArray(result.scenes) || result.scenes.length === 0) {
+                        const extractedScenes: any[] = [];
+                        for (let i = 1; i <= sceneCount; i++) {
+                            const sceneKey = `scene${i}`;
+                            if (result[sceneKey]) {
+                                extractedScenes.push({
+                                    ...result[sceneKey],
+                                    sceneNumber: i
+                                });
+                                delete result[sceneKey]; // cleanup
+                            }
+                        }
+                        result.scenes = extractedScenes;
+                    }
 
-                console.log(`📊 Attempt ${attempt}: ${actualWordCount} words (target: ${totalWordsMin}-${totalWordsMax}), ${result.scenes?.length} scenes`);
+                    if (!result.scenes || result.scenes.length < sceneCount) {
+                        throw new Error(`Generated only ${result.scenes?.length || 0} scenes, expected ${sceneCount}. Model likely truncated or ignored instructions.`);
+                    }
 
-                // Keep the best result
-                if (actualWordCount > bestWordCount) {
-                    bestResult = result;
-                    bestWordCount = actualWordCount;
+                    // Count actual words across all scenes
+                    const actualWordCount = result.scenes.reduce(
+                        (sum: number, s: any) => sum + (s.narration?.split(/\s+/).length || 0),
+                        0
+                    );
+
+                    console.log(`📊 Attempt ${attempt}: ${actualWordCount} words (target: ${totalWordsMin}-${totalWordsMax}), ${result.scenes.length} scenes`);
+
+                    // Keep the best result
+                    if (actualWordCount > bestWordCount) {
+                        bestResult = result;
+                        bestWordCount = actualWordCount;
+                    }
+
+                    // If word count is acceptable, use this result
+                    if (actualWordCount >= totalWordsMin * 0.85) {
+                        console.log(`✅ Word count OK (${actualWordCount} ≥ ${Math.floor(totalWordsMin * 0.85)})`);
+                        break;
+                    }
+
+                    console.warn(`⚠️ Word count too low: ${actualWordCount} < ${totalWordsMin} (need 85%+)`);
+                } catch (err: any) {
+                    console.error(`❌ Attempt ${attempt} failed: ${err.message}`);
+                    // Continue to next attempt
                 }
+            }
 
-                // If word count is acceptable, use this result
-                if (actualWordCount >= totalWordsMin * 0.85) {
-                    console.log(`✅ Word count OK (${actualWordCount} ≥ ${Math.floor(totalWordsMin * 0.85)})`);
-                    break;
-                }
-
-                console.warn(`⚠️ Word count too low: ${actualWordCount} < ${totalWordsMin} (need 85%+)`);
+            if (!bestResult) {
+                throw new Error('All script generation attempts failed. Please try again.');
             }
 
             // Recalculate accurate durations based on actual word counts
@@ -309,7 +365,7 @@ Return the response in this exact JSON format:
                 bestResult.totalWordCount = bestWordCount;
             }
 
-            console.log(`✅ Script finalized: "${bestResult.videoTitle}" | ${bestResult.scenes?.length} scenes | ${bestWordCount} words ≈ ${Math.round(bestWordCount / WORDS_PER_SEC)}s`);
+            console.log(`✅ Script finalized (Gemini 2.5 Flash): "${bestResult.videoTitle}" | ${bestResult.scenes?.length} scenes | ${bestWordCount} words ≈ ${Math.round(bestWordCount / WORDS_PER_SEC)}s`);
             return bestResult;
         });
 
@@ -562,7 +618,7 @@ Return the response in this exact JSON format:
 
             } catch (error: any) {
                 // Clean up temp file on error
-                try { fs.unlinkSync(tempFilePath); } catch {}
+                try { fs.unlinkSync(tempFilePath); } catch { }
                 console.error(`❌ Sarvam Batch STT Error: ${error.message}`);
                 throw error;
             }
@@ -571,65 +627,115 @@ Return the response in this exact JSON format:
         // Update status: generating images
         await step.run("update-status-images", () => updateSeriesStatus(seriesId, "generating:images"));
 
-        // Step 5: Generate Images using Leonardo Nano Banana 2
+        // Step 5: Generate Images — RunwayML primary, Leonardo Nano Banana fallback
         const imageData = await step.run("generate-images", async () => {
             console.log(`🖼️ Generating images for: "${seriesData.title}"`);
             console.log(`📸 Scenes to generate: ${scriptData.scenes?.length}`);
 
-            // Map video style to a Leonardo style UUID
-            const styleMap: Record<string, string> = {
-                "cinematic": NANO_BANANA_STYLES["Portrait Cinematic"],
-                "realistic": NANO_BANANA_STYLES["Stock Photo"],
-                "anime": NANO_BANANA_STYLES["Creative"],
-                "3d": NANO_BANANA_STYLES["3D Render"],
-                "watercolor": NANO_BANANA_STYLES["Watercolor"],
-                "comic": NANO_BANANA_STYLES["Illustration"],
-                "minimal": NANO_BANANA_STYLES["Creative"],
-                "neon": NANO_BANANA_STYLES["Dynamic"],
-                "vintage": NANO_BANANA_STYLES["Portrait Fashion"],
-                "dark": NANO_BANANA_STYLES["Portrait Cinematic"],
-            };
+            const IMAGE_RATIO = "768:1344"; // RunwayML portrait for vertical shorts (9:16)
+            const LEONARDO_WIDTH = 768;      // Leonardo portrait dimensions
+            const LEONARDO_HEIGHT = 1376;
+            const MAX_RETRIES_PER_SCENE = 3;
+            const totalScenes = scriptData.scenes.length;
+            const imageUrls: string[] = new Array(totalScenes).fill("");
 
-            const videoStyleLower = (seriesData.videoStyle || "").toLowerCase();
-            const selectedStyle = styleMap[videoStyleLower] || NANO_BANANA_STYLES["Dynamic"];
-            console.log(`🎨 Style: ${seriesData.videoStyle} → ${selectedStyle}`);
+            // ── Force-stop check: query DB to see if series was cancelled ──
+            async function isForceStoppedCheck(): Promise<boolean> {
+                const [current] = await db.select({ status: shortVideoSeries.status })
+                    .from(shortVideoSeries)
+                    .where(eq(shortVideoSeries.seriesId, seriesId));
+                if (!current || current.status === "completed" || current.status === "cancelled") {
+                    console.log(`🛑 Force stop detected! Series status is "${current?.status}". Aborting all image generation.`);
+                    return true;
+                }
+                return false;
+            }
 
-            // Generate images sequentially (one per scene) with rate-limiting
-            // Portrait dimensions for vertical shorts: 768×1376 (smallest = cheapest)
-            const imageUrls: string[] = [];
-
-            for (let i = 0; i < scriptData.scenes.length; i++) {
-                const scene = scriptData.scenes[i];
-                const prompt = scene.imagePrompt;
-
-                console.log(`🖼️ Scene ${i + 1}/${scriptData.scenes.length}: "${prompt.substring(0, 80)}..."`);
-
+            // ── Helper: try Leonardo Nano Banana as fallback ──
+            async function tryLeonardoFallback(prompt: string, sceneNum: number): Promise<string | null> {
+                console.log(`🎨 Falling back to Leonardo Nano Banana for Scene ${sceneNum}...`);
                 try {
-                    const imageUrl = await generateNanoBananaImage(
-                        prompt,
-                        768,    // width (portrait for shorts)
-                        1376,   // height
-                        selectedStyle
-                    );
-                    imageUrls.push(imageUrl);
-                    console.log(`✅ Scene ${i + 1} image: ${imageUrl.substring(0, 60)}...`);
+                    const imageUrl = await generateNanoBananaImage(prompt, LEONARDO_WIDTH, LEONARDO_HEIGHT);
+                    console.log(`✅ Leonardo fallback succeeded for Scene ${sceneNum}: ${imageUrl.substring(0, 60)}...`);
+                    return imageUrl;
                 } catch (err: any) {
-                    console.error(`❌ Scene ${i + 1} image FAILED — Full error below:`);
-                    console.error(err?.message || err);
-                    // Do NOT swallow silently — surface the real error in Inngest logs
-                    imageUrls.push(""); // push empty so indices stay aligned
+                    console.error(`❌ Leonardo fallback also failed for Scene ${sceneNum}: ${err?.message || err}`);
+                    return null;
+                }
+            }
+
+            // ── Generate all scenes ────────────────────────────────
+            for (let i = 0; i < totalScenes; i++) {
+                if (await isForceStoppedCheck()) break;
+
+                const prompt = scriptData.scenes[i].imagePrompt;
+                console.log(`🖼️ Scene ${i + 1}/${totalScenes}: "${prompt.substring(0, 80)}..."`);
+
+                let success = false;
+
+                // Try RunwayML first (with retries for non-moderation errors)
+                for (let attempt = 1; attempt <= MAX_RETRIES_PER_SCENE; attempt++) {
+                    if (await isForceStoppedCheck()) break;
+
+                    try {
+                        const imageUrl = await generateRunwayImage(prompt, IMAGE_RATIO);
+                        imageUrls[i] = imageUrl;
+                        console.log(`✅ Scene ${i + 1} image (RunwayML, attempt ${attempt}): ${imageUrl.substring(0, 60)}...`);
+                        success = true;
+                        break;
+                    } catch (err: any) {
+                        console.error(`❌ Scene ${i + 1} RunwayML attempt ${attempt}/${MAX_RETRIES_PER_SCENE} FAILED: ${err?.message || err}`);
+
+                        // Content moderation or generation failure → immediately switch to Leonardo
+                        if (err instanceof ContentModerationError || err?.message?.includes('content moderation') || err?.message?.includes('Failed to generate')) {
+                            console.log(`🛡️ Content moderation blocked Scene ${i + 1}. Switching to Leonardo Nano Banana...`);
+                            const fallbackUrl = await tryLeonardoFallback(prompt, i + 1);
+                            if (fallbackUrl) {
+                                imageUrls[i] = fallbackUrl;
+                                success = true;
+                            }
+                            break; // Don't retry RunwayML for moderation errors
+                        }
+
+                        // For other errors (rate limit, network), retry with backoff
+                        if (attempt < MAX_RETRIES_PER_SCENE) {
+                            const backoff = Math.min(5000 * Math.pow(2, attempt - 1), 30000) + Math.random() * 3000;
+                            console.log(`⏳ Retrying scene ${i + 1} in ${Math.round(backoff)}ms...`);
+                            await new Promise(r => setTimeout(r, backoff));
+                        }
+                    }
                 }
 
-                // Rate-limit between generations (avoid hitting Leonardo limits)
-                if (i < scriptData.scenes.length - 1) {
-                    const delay = 3000 + Math.random() * 2000; // 3-5s
-                    console.log(`⏳ Waiting ${Math.round(delay)}ms before next image...`);
+                // Rate-limit between scenes
+                if (i < totalScenes - 1) {
+                    const delay = 3000 + Math.random() * 2000;
                     await new Promise(r => setTimeout(r, delay));
                 }
             }
 
+            // ── Sweep: use Leonardo for any remaining empty scenes ───
+            if (!(await isForceStoppedCheck())) {
+                const failedIndices = imageUrls.map((url, i) => url === "" ? i : -1).filter(i => i !== -1);
+
+                if (failedIndices.length > 0) {
+                    console.log(`🔄 Sweep: ${failedIndices.length} scenes still missing. Trying Leonardo for each...`);
+                    for (const idx of failedIndices) {
+                        if (await isForceStoppedCheck()) break;
+                        const prompt = scriptData.scenes[idx].imagePrompt;
+                        const fallbackUrl = await tryLeonardoFallback(prompt, idx + 1);
+                        if (fallbackUrl) {
+                            imageUrls[idx] = fallbackUrl;
+                        }
+                    }
+                }
+            }
+
             const successCount = imageUrls.filter(u => u.length > 0).length;
-            console.log(`✅ Generated ${successCount}/${scriptData.scenes.length} images`);
+            console.log(`✅ Final result: ${successCount}/${totalScenes} images generated`);
+
+            if (successCount < totalScenes) {
+                console.warn(`⚠️ ${totalScenes - successCount} scene image(s) could not be generated after all attempts.`);
+            }
 
             return { imageUrls };
         });
@@ -677,7 +783,7 @@ Return the response in this exact JSON format:
             // Trigger actual render
             const result = await triggerRender(videoId, props);
             console.log(`🎬 Render triggered (${result.mode} mode) for ${videoId}`);
-            
+
             return { videoId, mode: result.mode };
         });
 

@@ -1,7 +1,7 @@
 import { db } from "@/config/db";
 import { courseImages } from "@/config/schema";
 import { putWithRotation } from "@/lib/blob";
-import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
+import { generateRunwayImage } from "@/lib/runway";
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -119,21 +119,10 @@ export async function POST(req: NextRequest) {
                 const prompt = buildImagePrompt(courseName, chapterTitle, topicsForImages[imgIdx], globalIndex);
 
                 try {
-                    // Pick a tech-friendly style from NANO_BANANA_STYLES
-                    const techStyles = [
-                        NANO_BANANA_STYLES["Dynamic"],
-                        NANO_BANANA_STYLES["Ray Traced"],
-                        NANO_BANANA_STYLES["3D Render"],
-                        NANO_BANANA_STYLES["Graphic Design 3D"],
-                        NANO_BANANA_STYLES["Illustration"],
-                        NANO_BANANA_STYLES["Creative"]
-                    ];
-                    const selectedStyle = techStyles[Math.floor(Math.random() * techStyles.length)];
-
-                    // 1024×1024 — valid 1:1 pair for Nano Banana 2, great for course slides
-                    console.log(`  📸 [${globalIndex + 1}] Generating image with Nano Banana 2 (Style: ${selectedStyle})...`);
-                    const leonardoUrl = await generateNanoBananaImage(prompt, 1024, 1024, selectedStyle);
-                    console.log(`  ✅ Leonardo URL: ${leonardoUrl.substring(0, 60)}...`);
+                    // 1024:1024 — square for course slides via RunwayML Gemini 2.5 Flash
+                    console.log(`  📸 [${globalIndex + 1}] Generating image with RunwayML Gemini 2.5 Flash...`);
+                    const leonardoUrl = await generateRunwayImage(prompt, "1024:1024");
+                    console.log(`  ✅ RunwayML URL: ${leonardoUrl.substring(0, 60)}...`);
 
                     // ⬇️ DOWNLOAD & UPLOAD TO VERCEL BLOB (PERSISTENCE FIX) ⬇️
                     console.log(`  CLOUD UPLOAD: Saving to Vercel Blob...`);
@@ -185,7 +174,7 @@ export async function POST(req: NextRequest) {
             data: generatedImages,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'nano-banana-2',
+                engine: 'runway-gemini-2.5-flash',
                 courseId,
                 totalRequested: totalExpected,
                 totalGenerated: generatedImages.length,

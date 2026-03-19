@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
     try {
-        const { seriesId } = await req.json();
+        const { seriesId, customTopic } = await req.json();
 
         if (!seriesId) {
             return NextResponse.json(
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
         // Send event to Inngest to trigger video generation
         await inngest.send({
             name: "shorts/generate.video",
-            data: { seriesId },
+            data: { seriesId, ...(customTopic ? { customTopic } : {}) },
         });
 
         return NextResponse.json({

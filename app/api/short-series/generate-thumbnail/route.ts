@@ -1,6 +1,6 @@
 import { db } from "@/config/db";
 import { shortVideoSeries } from "@/config/schema";
-import { generateNanoBananaImage, NANO_BANANA_STYLES } from "@/lib/leonardo";
+import { generateRunwayImage } from "@/lib/runway";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
@@ -110,16 +110,8 @@ export async function POST(req: NextRequest) {
         const prompt = buildShortsThumbnailPrompt(title, niche || 'creative');
         console.log('📸 Prompt:', prompt);
 
-        const aestheticStyles = [
-            NANO_BANANA_STYLES["Dynamic"],
-            NANO_BANANA_STYLES["3D Render"],
-            NANO_BANANA_STYLES["Graphic Design 3D"],
-            NANO_BANANA_STYLES["Portrait Cinematic"],
-        ];
-        const selectedStyle = aestheticStyles[Math.floor(Math.random() * aestheticStyles.length)];
-
-        // 1376×768 — valid 16:9 pair for Nano Banana 2, perfect for landscape dashboard cards
-        const signedUrl = await generateNanoBananaImage(prompt, 1376, 768, selectedStyle);
+        // Generate via RunwayML Gemini 2.5 Flash — 1344:768 landscape for dashboard cards
+        const signedUrl = await generateRunwayImage(prompt, "1344:768");
         const localPath = await downloadAndSaveThumbnail(signedUrl, seriesId);
 
         // Update DB
