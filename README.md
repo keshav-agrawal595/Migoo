@@ -137,11 +137,11 @@ npm run dev
 | `CLERK_SECRET_KEY` | ✅ | Clerk secret key |
 | `OPENROUTER_API_KEY` | ✅ | OpenRouter API key for LLM access |
 | `SARVAM_API_KEY` | ✅ | Sarvam AI key for TTS/STT |
-| `GEMINI_API_KEY` | ⬚ | Google Gemini API key |
+| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
 | `BLOB_READ_WRITE_TOKEN` | ✅ | Vercel Blob storage token |
-| `RUNWAY_API_KEY` | ⬚ | RunwayML image generation |
-| `LEONARDO_API_KEY` | ⬚ | Leonardo AI (fallback images) |
-| `INNGEST_SIGNING_KEY` | ⬚ | Inngest webhook signing key |
+| `RUNWAY_API_KEY` | ✅ | RunwayML image generation |
+| `LEONARDO_API_KEY` | ✅ | Leonardo AI (fallback images) |
+| `INNGEST_SIGNING_KEY` | ✅ | Inngest webhook signing key |
 
 ## 🗄️ Database Schema
 
@@ -259,4 +259,4 @@ This project is part of an educational assessment.
 
 ---
 
-Built with ❤️ by **Team T4** — Keshav Agrawal & Parmeet Singh
+Built with ❤️ by **Team T4** — Parmeet Singh
