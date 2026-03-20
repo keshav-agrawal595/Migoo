@@ -1,6 +1,6 @@
 /**
  * OpenRouter API Configuration
- * Using arcee-ai/trinity-large-preview:free model
+ * Using nvidia/nemotron-3-nano-30b-a3b:free model
  * Enhanced JSON parsing with HTML quote handling
  */
 
@@ -10,7 +10,6 @@ interface OpenRouterResponse {
             content: string;
             reasoning_details?: unknown;
         };
-        finish_reason?: string;
     }>;
     usage?: {
         prompt_tokens: number;
@@ -22,7 +21,7 @@ interface OpenRouterResponse {
 class OpenRouterClient {
     private apiKey: string;
     private baseUrl: string = 'https://openrouter.ai/api/v1';
-    private model: string = 'arcee-ai/trinity-large-preview:free';
+    private model: string = 'openrouter/aurora-alpha';
 
     constructor() {
         this.apiKey = process.env.OPENROUTER_API_KEY || '';
@@ -32,21 +31,24 @@ class OpenRouterClient {
     }
 
     /**
-     * Generate JSON response with robust HTML handling
+     * Generate JSON response with robust HTML handling and reasoning support
      */
     async json(systemPrompt: string, userInput: string, options?: {
         model?: string;
         temperature?: number;
         maxTokens?: number;
+        reasoning?: boolean;
     }): Promise<any> {
         const model = options?.model || this.model;
         const temperature = options?.temperature ?? 0.7;
         const maxTokens = options?.maxTokens ?? 8000;
+        const enableReasoning = options?.reasoning ?? true; // Enable reasoning by default
 
         console.log('🤖 OpenRouter API Request:', {
             model,
             temperature,
-            maxTokens
+            maxTokens,
+            reasoning: enableReasoning
         });
 
         const combinedPrompt = `${systemPrompt}\n\nUSER REQUEST:\n${userInput}\n\n---
@@ -58,7 +60,7 @@ CRITICAL OUTPUT RULES:
 5. No markdown code blocks, no explanations, just pure JSON
 6. Ensure all JSON strings are properly escaped`;
 
-        const requestBody = {
+        const requestBody: any = {
             model: model,
             messages: [
                 {
@@ -74,6 +76,11 @@ CRITICAL OUTPUT RULES:
             max_tokens: maxTokens
         };
 
+        // Add reasoning for pony-alpha model
+        if (enableReasoning && model.includes('pony')) {
+            requestBody.reasoning = { enabled: true };
+        }
+
         try {
             const url = `${this.baseUrl}/chat/completions`;
 
@@ -81,9 +88,7 @@ CRITICAL OUTPUT RULES:
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${this.apiKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': 'https://ai-video-course-generator.vercel.app',
-                    'X-Title': 'AI Video Course Generator'
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify(requestBody)
             });
@@ -95,6 +100,9 @@ CRITICAL OUTPUT RULES:
             }
 
             const data: OpenRouterResponse = await response.json();
+
+            // Debug: Log full response structure
+            console.log('📦 Full OpenRouter response:', JSON.stringify(data, null, 2));
 
             if (!data.choices || data.choices.length === 0) {
                 console.error('❌ No choices in response:', data);
@@ -108,27 +116,27 @@ CRITICAL OUTPUT RULES:
 
             if (!data.choices[0].message.content) {
                 console.error('❌ No content in message:', data.choices[0].message);
-                throw new Error('No content in OpenRouter response');
+                console.error('📊 Full response data:', JSON.stringify(data, null, 2));
+                throw new Error('No content in OpenRouter response - check logs for full response');
             }
 
             const rawText = data.choices[0].message.content;
-            const finishReason = data.choices[0].finish_reason;
-            const wasTruncated = finishReason === 'length';
+
+            // Log reasoning details if available
+            if (data.choices[0].message.reasoning_details) {
+                console.log('🧠 Reasoning details available:', 
+                    typeof data.choices[0].message.reasoning_details
+                );
+            }
 
             console.log('✅ OpenRouter response received:', {
                 length: rawText.length,
                 tokens: data.usage?.total_tokens,
-                finishReason,
-                wasTruncated,
                 preview: rawText.substring(0, 200) + '...'
             });
 
-            if (wasTruncated) {
-                console.warn('⚠️ Response was TRUNCATED (finish_reason=length). Will attempt to repair JSON...');
-            }
-
             // Parse JSON from response
-            return this.extractAndParseJSON(rawText, wasTruncated);
+            return this.extractAndParseJSON(rawText);
 
         } catch (error: any) {
             console.error('❌ OpenRouter API Error:', error.message);
@@ -139,7 +147,7 @@ CRITICAL OUTPUT RULES:
     /**
      * Extract and parse JSON with smart HTML handling
      */
-    private extractAndParseJSON(text: string, wasTruncated: boolean = false): any {
+    private extractAndParseJSON(text: string): any {
         console.log('🔧 Extracting JSON from response...');
 
         let cleaned = text.trim();
@@ -164,26 +172,12 @@ CRITICAL OUTPUT RULES:
 
         let jsonStr = cleaned.substring(jsonStart).trim();
 
-        // If truncated, try repair FIRST before other strategies
-        if (wasTruncated) {
-            console.log('🔧 Response truncated — trying truncation repair first...');
-            try {
-                const repaired = this.repairTruncatedJSON(jsonStr);
-                if (repaired) {
-                    console.log(`✅ Truncation repair succeeded!`);
-                    return repaired;
-                }
-            } catch (e: any) {
-                console.warn('⚠️ Truncation repair failed:', e.message);
-            }
-        }
-
         // Try progressive parsing strategies
         const strategies = [
             () => JSON.parse(jsonStr),
             () => this.parseWithHtmlFix(jsonStr),
             () => this.parseWithSmartQuoteEscape(jsonStr),
-            () => this.parseWithBruteForce(jsonStr, wasTruncated),
+            () => this.parseWithBruteForce(jsonStr),
         ];
 
         for (let i = 0; i < strategies.length; i++) {
@@ -242,13 +236,8 @@ CRITICAL OUTPUT RULES:
     /**
      * Brute force: Extract valid JSON by finding matching brackets
      */
-    private parseWithBruteForce(jsonStr: string, wasTruncated: boolean = false): any {
+    private parseWithBruteForce(jsonStr: string): any {
         console.log('🔨 Attempting brute force JSON extraction...');
-
-        // For truncated responses, try to extract complete slide objects
-        if (wasTruncated) {
-            return this.extractCompleteSlides(jsonStr);
-        }
 
         let depth = 0;
         let inString = false;
@@ -338,124 +327,10 @@ CRITICAL OUTPUT RULES:
     }
 
     /**
-     * Repair truncated JSON by closing open strings, objects, and arrays.
-     * Extracts as many complete slide objects as possible.
-     */
-    private repairTruncatedJSON(jsonStr: string): any {
-        console.log('🔧 Repairing truncated JSON...');
-        console.log(`📏 Input length: ${jsonStr.length} chars`);
-
-        // Strategy: Find complete top-level objects in the array
-        const slides = this.extractCompleteSlides(jsonStr);
-        if (slides && slides.length > 0) {
-            return slides;
-        }
-
-        throw new Error('Could not repair truncated JSON');
-    }
-
-    /**
-     * Extract complete slide objects from a potentially truncated JSON array.
-     * Walks through character by character, tracking depth, and extracts
-     * each complete top-level object from the array.
-     */
-    private extractCompleteSlides(jsonStr: string): any[] {
-        console.log('🔍 Extracting complete slide objects from truncated response...');
-
-        const slides: any[] = [];
-
-        // Find the opening '[' of the array
-        const arrayStart = jsonStr.indexOf('[');
-        if (arrayStart === -1) {
-            throw new Error('No JSON array found');
-        }
-
-        let i = arrayStart + 1; // Start after '['
-
-        while (i < jsonStr.length) {
-            // Skip whitespace and commas between objects
-            while (i < jsonStr.length && /[\s,]/.test(jsonStr[i])) {
-                i++;
-            }
-
-            if (i >= jsonStr.length || jsonStr[i] === ']') break;
-
-            // We should be at '{' — start of a slide object
-            if (jsonStr[i] !== '{') {
-                i++;
-                continue;
-            }
-
-            const objStart = i;
-            let depth = 0;
-            let inString = false;
-            let escape = false;
-            let complete = false;
-
-            for (let j = objStart; j < jsonStr.length; j++) {
-                const char = jsonStr[j];
-
-                if (escape) {
-                    escape = false;
-                    continue;
-                }
-
-                if (char === '\\' && inString) {
-                    escape = true;
-                    continue;
-                }
-
-                if (char === '"' && !escape) {
-                    inString = !inString;
-                    continue;
-                }
-
-                if (!inString) {
-                    if (char === '{' || char === '[') {
-                        depth++;
-                    } else if (char === '}' || char === ']') {
-                        depth--;
-                        if (depth === 0) {
-                            // Found complete object
-                            const objStr = jsonStr.substring(objStart, j + 1);
-                            try {
-                                const parsed = JSON.parse(objStr);
-                                // Validate it looks like a slide
-                                if (parsed && (parsed.slideId || parsed.html || parsed.narration)) {
-                                    slides.push(parsed);
-                                    console.log(`✅ Extracted complete slide ${slides.length}: ${parsed.slideId || 'unknown'}`);
-                                }
-                            } catch (parseErr) {
-                                console.warn(`⚠️ Found complete brackets but JSON invalid at position ${objStart}`);
-                            }
-                            i = j + 1;
-                            complete = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!complete) {
-                // Object was truncated — we've extracted all complete slides
-                console.log(`⚠️ Hit truncated object at position ${objStart} — stopping extraction`);
-                break;
-            }
-        }
-
-        if (slides.length === 0) {
-            throw new Error('Could not extract any complete slides from truncated response');
-        }
-
-        console.log(`✅ Successfully extracted ${slides.length} complete slides from truncated response`);
-        return slides;
-    }
-
-    /**
      * Test API connection
      */
     async test(): Promise<void> {
-        console.log('🔗 Testing OpenRouter API with arcee-ai/trinity-large-preview:free...');
+        console.log('🔗 Testing OpenRouter API...');
 
         const url = `${this.baseUrl}/chat/completions`;
 
@@ -463,9 +338,7 @@ CRITICAL OUTPUT RULES:
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${this.apiKey}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'https://ai-video-course-generator.vercel.app',
-                'X-Title': 'AI Video Course Generator'
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
                 model: this.model,
@@ -475,7 +348,8 @@ CRITICAL OUTPUT RULES:
                         content: 'Reply with: OK'
                     }
                 ],
-                max_tokens: 10
+                max_tokens: 10,
+                reasoning: { enabled: true }
             })
         });
 
