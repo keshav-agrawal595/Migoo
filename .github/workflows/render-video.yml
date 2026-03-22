@@ -25,6 +25,9 @@ jobs:
           mkdir -p tmp
           echo '${{ toJson(github.event.client_payload.props) }}' > tmp/props.json
 
+      - name: Download Avatar Assets
+        run: node scripts/download-assets.js
+
       - name: Render Video
         run: |
           npx remotion render MainVideo out/video.mp4 \

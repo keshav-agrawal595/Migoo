@@ -18,6 +18,7 @@ export const RemotionRoot: React.FC = () => {
         }}
         defaultProps={{
           imageUrls: [],
+          avatarClipData: [],
           audioUrl: '',
           musicUrl: '',
           captionData: {

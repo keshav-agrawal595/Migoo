@@ -818,6 +818,7 @@ function VideoPlayerDialog({ video, series, onClose }: { video: VideoAsset | nul
                                 }}
                                 inputProps={{
                                     imageUrls: video.imageUrls || [],
+                                    avatarClipData: (video.avatarClipUrls || []).map((url: string) => url ? { url, motionDuration: undefined } : null),
                                     audioUrl: video.audioUrl || '',
                                     musicUrl: musicUrl,
                                     captionData: video.captionData || { segments: [] },

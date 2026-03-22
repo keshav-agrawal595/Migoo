@@ -102,6 +102,9 @@ export const shortVideoAssets = pgTable("short_video_assets", {
 
     // Image data from step 5
     imageUrls: json("image_urls"),                       // ["url1", "url2", ...] per scene
+    
+    // Avatar clip data from step 5.5
+    avatarClipUrls: json("avatar_clip_urls"),            // ["", "", "url3", "", "", "url6"] per scene
 
     // Final rendered video
     videoUrl: text("video_url"),

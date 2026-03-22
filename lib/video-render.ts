@@ -6,6 +6,9 @@ import { exec } from "child_process";
 import path from "path";
 import fs from "fs";
 
+// Bundled FFmpeg binary — no system install required
+const ffmpegPath = require('ffmpeg-static') as string;
+
 /**
  * Common logic to trigger a video render (local or cloud)
  */
@@ -86,10 +89,13 @@ async function renderLocally(videoId: string, props: Record<string, any>) {
     const cwd = process.cwd();
 
     // Ensure directories exist
-    const tmpDir = path.join(cwd, 'tmp');
+    const tmpDir = path.join(cwd, 'public', 'tmp');
     const rendersDir = path.join(cwd, 'public', 'renders');
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
     if (!fs.existsSync(rendersDir)) fs.mkdirSync(rendersDir, { recursive: true });
+
+    // Avatar clips are pre-transcoded CFR files in public/avatars/ — no download needed.
+    // staticFile() in Composition.tsx resolves them directly from the public directory.
 
     // Write props to a temp JSON file
     const propsPath = path.join(tmpDir, `props-${videoId}.json`);
@@ -100,7 +106,7 @@ async function renderLocally(videoId: string, props: Record<string, any>) {
     // Use forward slashes for CLI compatibility
     const propsArg = propsPath.replace(/\\/g, '/');
     const outputArg = outputPath.replace(/\\/g, '/');
-    const command = `npx remotion render MainVideo "${outputArg}" --props="${propsArg}" --duration=${props.durationInFrames} --timeout=120000`;
+    const command = `npx remotion render MainVideo "${outputArg}" --props="${propsArg}" --duration=${props.durationInFrames} --timeout=120000 --disable-web-security`;
 
     console.log(`💻 Executing: ${command}`);
 

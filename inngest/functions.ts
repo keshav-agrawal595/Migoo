@@ -9,6 +9,168 @@ import { triggerRender } from "@/lib/video-render";
 import { and, eq, or } from "drizzle-orm";
 import { inngest } from "./client";
 
+// ─── HeyGen Avatar Clip Configuration ────────────────────────────────────────
+
+// Local CFR-transcoded avatar clips (public/avatars/*.mp4)
+// These are pre-transcoded to 30fps CFR / all-keyframe for reliable Remotion rendering.
+// Paths are relative to public/ — served via staticFile() in Remotion.
+// videoDurationSec = actual duration probed from the CFR file.
+const AVATAR_CLIPS = {
+    intro: {
+        avatar1: {
+            videoUrl: "avatars/avatar1-intro.mp4",
+            videoDurationSec: 9.37,
+            script: "Hey guys! How are you all doing? I hope you're having a great day. Today we're diving into something truly fascinating. Let's get right into it!",
+        },
+        avatar2: {
+            videoUrl: "avatars/avatar2-intro.mp4",
+            videoDurationSec: 7.97,
+            script: "Hello everyone, welcome back. Today I have a story that will completely change how you see things. Are you ready? Let's begin.",
+        },
+        avatar3: {
+            videoUrl: "avatars/avatar3-intro.mp4",
+            videoDurationSec: 9.93,
+            script: "Hey there! Hope you're doing amazing today. I've got some incredible facts lined up for you in this video, so stick around and let's explore this together.",
+        },
+    },
+    outro: {
+        avatar4: {
+            videoUrl: "avatars/avatar4-outro.mp4",
+            videoDurationSec: 10.40,
+            script: "I hope you enjoyed the video and learned something new today. If you did, don't forget to like and subscribe for more content just like this. See you in the next one!",
+        },
+        avatar5: {
+            videoUrl: "avatars/avatar5-outro.mp4",
+            videoDurationSec: 8.47,
+            script: "Let me know your thoughts in the comments below, and consider subscribing if you haven't already. Thanks for watching and don't forget to Like this Video!",
+        },
+        avatar6: {
+            videoUrl: "avatars/avatar6-outro.mp4",
+            videoDurationSec: 9.63,
+            script: "Did you know that? I hope you found this video as fascinating as I did. Make sure to hit that subscribe button for more amazing Videos. Until next time, take care!",
+        },
+    },
+} as const;
+
+// Pairing rules:
+// Avatar1 Intro → Avatar4 Outro or Avatar3 Outro (random)
+// Avatar2 Intro → Avatar4 Outro or Avatar3 Outro (random)
+// Avatar3 Intro → Avatar6 Outro (fixed)
+type IntroKey = keyof typeof AVATAR_CLIPS.intro;
+type OutroKey = keyof typeof AVATAR_CLIPS.outro;
+
+const AVATAR_PAIRINGS: Record<IntroKey, OutroKey[]> = {
+    avatar1: ["avatar4", "avatar5"],
+    avatar2: ["avatar4", "avatar5"],
+    avatar3: ["avatar6"],
+};
+
+function selectAvatarPair(): { intro: typeof AVATAR_CLIPS.intro[IntroKey]; outro: typeof AVATAR_CLIPS.outro[OutroKey] } {
+    const introKeys: IntroKey[] = ["avatar1", "avatar1", "avatar2", "avatar2", "avatar3"]; // weighted: 40%/40%/20%
+    const introKey = introKeys[Math.floor(Math.random() * introKeys.length)];
+    const outroOptions = AVATAR_PAIRINGS[introKey];
+    const outroKey = outroOptions[Math.floor(Math.random() * outroOptions.length)];
+    console.log(`🎭 Selected intro: ${introKey}, outro: ${outroKey}`);
+    return {
+        intro: AVATAR_CLIPS.intro[introKey],
+        outro: AVATAR_CLIPS.outro[outroKey],
+    };
+}
+
+// ─── English TTS helper for intro/outro clips ─────────────────────────────────
+
+// Build FFmpeg atempo filter chain for a given speed ratio.
+// atempo supports 0.5–2.0 per stage; chain stages for extreme ratios.
+function buildAtempoFilter(ratio: number): string {
+    const clamp = (v: number) => Math.max(0.5, Math.min(2.0, v));
+    if (ratio >= 0.5 && ratio <= 2.0) return `atempo=${ratio.toFixed(4)}`;
+    if (ratio > 2.0) {
+        const stage = Math.pow(ratio, 1 / 3);
+        return `atempo=${clamp(stage).toFixed(4)},atempo=${clamp(stage).toFixed(4)},atempo=${clamp(stage).toFixed(4)}`;
+    }
+    // ratio < 0.5: need to slow down significantly
+    const stage = Math.pow(ratio, 1 / 3);
+    return `atempo=${clamp(stage).toFixed(4)},atempo=${clamp(stage).toFixed(4)},atempo=${clamp(stage).toFixed(4)}`;
+}
+
+async function generateEnglishTTS(
+    text: string,
+    seriesId: string,
+    type: "intro" | "outro",
+    speaker: string,
+    targetDurationSec: number  // video clip duration → stretch TTS to match
+): Promise<{ audioUrl: string; durationSec: number }> {
+    const cleaned = sanitizeForTTS(text);
+    let audioBuffer = await callSarvamTTS(cleaned, speaker, "en-IN");
+
+    // ── Calculate raw TTS duration from WAV header ─────────────────────────
+    const sampleRate    = audioBuffer.readUInt32LE(24);
+    const dataSize      = audioBuffer.length - 44;
+    const bytesPerSample = audioBuffer.readUInt16LE(34) / 8;
+    const channels      = audioBuffer.readUInt16LE(22);
+    const ttsDurationSec = dataSize / (sampleRate * bytesPerSample * channels);
+    console.log(`🎙️ ${type} TTS raw duration: ${ttsDurationSec.toFixed(2)}s, target: ${targetDurationSec}s`);
+
+    // ── Time-stretch to match video clip duration (FFmpeg atempo) ──────────
+    const ratio = ttsDurationSec / targetDurationSec; // > 1 = speed up, < 1 = slow down
+    const STRETCH_THRESHOLD = 0.05; // skip if within 5%
+    if (Math.abs(ratio - 1) > STRETCH_THRESHOLD) {
+        try {
+            const os   = require('os');
+            const path = require('path');
+            const fs   = require('fs');
+            const { exec } = require('child_process');
+            let ffmpegBin = require('ffmpeg-static') as string;
+            // Webpack/Next.js can bundle this to a non-existent \ROOT\... virtual path
+            if (!fs.existsSync(ffmpegBin)) {
+                ffmpegBin = path.join(process.cwd(), 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+            }
+
+            const tmpDir  = os.tmpdir();
+            const inPath  = path.join(tmpDir, `${type}_tts_raw_${Date.now()}.wav`);
+            const outPath = path.join(tmpDir, `${type}_tts_stretched_${Date.now()}.wav`);
+            fs.writeFileSync(inPath, audioBuffer);
+
+            const atempoFilter = buildAtempoFilter(ratio);
+            const cmd = `"${ffmpegBin}" -y -i "${inPath}" -filter:a "${atempoFilter}" "${outPath}"`;
+            console.log(`⏩ Stretching ${type} audio: ratio=${ratio.toFixed(3)}, filter=${atempoFilter}`);
+
+            await new Promise<void>((resolve, reject) =>
+                exec(cmd, (err: any, _: string, stderr: string) => {
+                    if (err) { console.warn(`⚠️ atempo failed: ${stderr?.slice(-200)}`); reject(err); }
+                    else resolve();
+                })
+            );
+
+            audioBuffer = fs.readFileSync(outPath);
+            fs.unlinkSync(inPath);
+            fs.unlinkSync(outPath);
+            console.log(`✅ ${type} audio stretched to ~${targetDurationSec}s`);
+        } catch (e: any) {
+            console.warn(`⚠️ Audio time-stretch failed, using original TTS: ${e.message}`);
+        }
+    } else {
+        console.log(`⏭️ ${type} TTS within 5% of target — no stretch needed`);
+    }
+
+    // Upload final audio
+    const blobResult = await putWithRotation(
+        `shorts/${seriesId}/${type}_audio_${Date.now()}.wav`,
+        audioBuffer,
+        { access: "public", contentType: "audio/wav" }
+    );
+
+    // Re-read duration from the (possibly stretched) buffer
+    const finalSampleRate    = audioBuffer.readUInt32LE(24);
+    const finalDataSize      = audioBuffer.length - 44;
+    const finalBytesPerSample = audioBuffer.readUInt16LE(34) / 8;
+    const finalChannels      = audioBuffer.readUInt16LE(22);
+    const finalDurationSec   = finalDataSize / (finalSampleRate * finalBytesPerSample * finalChannels);
+
+    console.log(`✅ ${type} audio uploaded: ${blobResult.url} (${finalDurationSec.toFixed(1)}s)`);
+    return { audioUrl: blobResult.url, durationSec: Math.round(finalDurationSec * 10) / 10 };
+}
+
 
 // ─── Sarvam TTS helpers (reusing patterns from lib/enhanced-tts.ts) ──────────
 
@@ -26,6 +188,7 @@ function sanitizeForTTS(text: string): string {
         .replace(/!{2,}/g, '!')
         .replace(/\?{2,}/g, '?')
         .replace(/([.!?])([A-Z])/g, '$1 $2')
+        .replace(/[*_#]/g, '') // Remove markdown formatting that avatars might read out loud
         .trim();
 }
 
@@ -740,6 +903,39 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
             return { imageUrls };
         });
 
+        // Update status: selecting avatar clips
+        await step.run("update-status-avatar", () => updateSeriesStatus(seriesId, "generating:avatar"));
+
+        // Step 5.5: Select pre-made HeyGen avatar clips and generate English TTS for intro/outro
+        const avatarData = await step.run("select-avatar-clips", async () => {
+            console.log(`🎭 Selecting HeyGen avatar clips and generating English TTS for: "${seriesData.title}"`);
+
+            // Pick intro/outro pair based on pairing rules
+            const pair = selectAvatarPair();
+
+            // Generate English TTS audio for intro and outro (in parallel)
+            const [introAudio, outroAudio] = await Promise.all([
+                generateEnglishTTS(pair.intro.script, seriesId, "intro", seriesData.voice, pair.intro.videoDurationSec),
+                generateEnglishTTS(pair.outro.script, seriesId, "outro", seriesData.voice, pair.outro.videoDurationSec),
+            ]);
+
+            const introClip = {
+                videoUrl: pair.intro.videoUrl,
+                audioUrl: introAudio.audioUrl,
+                durationSec: introAudio.durationSec,
+            };
+            const outroClip = {
+                videoUrl: pair.outro.videoUrl,
+                audioUrl: outroAudio.audioUrl,
+                durationSec: outroAudio.durationSec,
+            };
+
+            console.log(`✅ Intro clip ready: ${introClip.videoUrl} (${introClip.durationSec}s)`);
+            console.log(`✅ Outro clip ready: ${outroClip.videoUrl} (${outroClip.durationSec}s)`);
+
+            return { introClip, outroClip };
+        });
+
         // Update status: video
         await step.run("update-status-video", () => updateSeriesStatus(seriesId, "generating:video"));
 
@@ -756,15 +952,30 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
         const videoResult = await step.run("render-and-save", async () => {
             const videoId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             const musicUrl = getMusicUrl(seriesData.music);
+
+            // Total duration = intro + narration + outro
+            const introDuration = avatarData.introClip.durationSec;
+            const outroDuration = avatarData.outroClip.durationSec;
+            const totalDurationSec = introDuration + (voiceData.audioDuration || 60) + outroDuration;
+
             const props = {
                 imageUrls: imageData.imageUrls,
+                introClip: avatarData.introClip,
+                outroClip: avatarData.outroClip,
                 audioUrl: voiceData.audioUrl,
+                audioDuration: voiceData.audioDuration,
                 musicUrl,
                 captionData: captionData,
                 captionStyle: seriesData.captionStyle,
                 language: seriesData.language || 'en-IN',
-                durationInFrames: Math.floor((voiceData.audioDuration || 60) * 30),
+                durationInFrames: Math.floor(totalDurationSec * 30),
             };
+
+            // Avatar clip URLs for DB storage (intro + outro)
+            const avatarClipUrls = [
+                avatarData.introClip.videoUrl,
+                avatarData.outroClip.videoUrl,
+            ];
 
             console.log(`💾 Saving initial video assets for: ${videoId}`);
             // Insert into shortVideoAssets table first
@@ -777,7 +988,8 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 audioDuration: voiceData.audioDuration,
                 captionData: captionData,
                 imageUrls: imageData.imageUrls,
-                status: "processing", // Initial status
+                avatarClipUrls, // Store intro/outro video URLs for reference
+                status: "processing",
             });
 
             // Trigger actual render
