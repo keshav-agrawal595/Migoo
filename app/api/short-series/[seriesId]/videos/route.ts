@@ -22,11 +22,21 @@ export async function GET(
         }
 
         // Fetch all videos for this series
-        const videos = await db
+        let videos = await db
             .select()
             .from(shortVideoAssets)
             .where(eq(shortVideoAssets.seriesId, seriesId))
             .orderBy(desc(shortVideoAssets.createdAt));
+
+        // Self-healing: Ensure thumbnails exist for all completed videos
+        // We do this in parallel and update the 'videos' array if thumbnails were generated
+        const { ensureVideoThumbnail } = require('@/lib/video-render');
+        await Promise.all(videos.map(async (v) => {
+            if (v.status === 'completed' && !v.thumbnailUrl) {
+                const newThumb = await ensureVideoThumbnail(v.videoId);
+                if (newThumb) v.thumbnailUrl = newThumb;
+            }
+        }));
 
         return NextResponse.json({
             success: true,

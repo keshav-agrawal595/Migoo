@@ -1,22 +1,22 @@
+import { loadFont as loadInter } from '@remotion/google-fonts/Inter';
+import { loadFont } from '@remotion/google-fonts/Montserrat';
+import { loadFont as loadNotoHindi } from '@remotion/google-fonts/NotoSansDevanagari';
+import { loadFont as loadOrbitron } from '@remotion/google-fonts/Orbitron';
+import { loadFont as loadPlayfair } from '@remotion/google-fonts/PlayfairDisplay';
+import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
+import { loadFont as loadSpaceMono } from '@remotion/google-fonts/SpaceMono';
 import React, { useMemo } from 'react';
 import {
   AbsoluteFill,
   Audio,
   Img,
   interpolate,
+  OffthreadVideo,
   Sequence,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
-  Video,
-  staticFile,
 } from 'remotion';
-import { loadFont } from '@remotion/google-fonts/Montserrat';
-import { loadFont as loadInter } from '@remotion/google-fonts/Inter';
-import { loadFont as loadSpaceMono } from '@remotion/google-fonts/SpaceMono';
-import { loadFont as loadOrbitron } from '@remotion/google-fonts/Orbitron';
-import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
-import { loadFont as loadPlayfair } from '@remotion/google-fonts/PlayfairDisplay';
-import { loadFont as loadNotoHindi } from '@remotion/google-fonts/NotoSansDevanagari';
 import { captionStyles } from '../lib/caption-styles';
 
 // Preload fonts
@@ -38,10 +38,13 @@ export interface AvatarClipProps {
   videoUrl: string;
   audioUrl: string;
   durationSec: number;
+  videoDurationSec?: number; // actual duration of the avatar video file
 }
 
 export interface CompositionProps {
   imageUrls: string[];
+  sceneVideoUrls?: string[];
+  sceneVideoDurations?: number[];
   introClip?: AvatarClipProps;
   outroClip?: AvatarClipProps;
   audioUrl: string;
@@ -59,10 +62,10 @@ export interface CompositionProps {
 const CrossfadeBridge: React.FC<{ durationInFrames: number }> = ({ durationInFrames }) => {
   const frame = useCurrentFrame();
   const half = durationInFrames / 2;
-  // Fade in during first half, fade out during second half
+  // First half: fade TO black, second half: fade FROM black
   const opacity = frame < half
-    ? interpolate(frame, [0, half], [1, 0], { extrapolateRight: 'clamp' })
-    : interpolate(frame, [half, durationInFrames], [0, 1], { extrapolateLeft: 'clamp' });
+    ? interpolate(frame, [0, half], [0, 1], { extrapolateRight: 'clamp' })
+    : interpolate(frame, [half, durationInFrames], [1, 0], { extrapolateLeft: 'clamp' });
 
   return (
     <AbsoluteFill
@@ -79,21 +82,80 @@ const CrossfadeBridge: React.FC<{ durationInFrames: number }> = ({ durationInFra
 const AvatarClipScene: React.FC<{
   videoUrl: string;
   audioUrl: string;
-}> = ({ videoUrl, audioUrl }) => {
+  durationInFrames: number;
+  videoDurationSec?: number; // actual length of the avatar video file
+}> = ({ videoUrl, audioUrl, durationInFrames, videoDurationSec }) => {
+  const { fps } = useVideoConfig();
+
   // Remote URLs (https://) used as-is; local paths go through staticFile()
-  // so Remotion's bundler can serve them from public/
-  const resolvedVideoUrl = videoUrl.startsWith('http') ? videoUrl : staticFile(videoUrl);
+  const resolvedVideoUrl = useMemo(() => {
+    // Forcefully strip any full HTTP absolute paths that point to localhost
+    // and extract the correct relative file path.
+    let cleanUrl = videoUrl;
+
+    if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
+      try {
+        const urlObj = new URL(cleanUrl);
+        cleanUrl = urlObj.pathname;
+      } catch (e) {
+        // Fallback if not a valid URL
+      }
+    }
+
+    // Completely strip any "public/" prefix
+    if (cleanUrl.startsWith('/public/')) cleanUrl = cleanUrl.replace('/public/', '');
+    if (cleanUrl.startsWith('public/')) cleanUrl = cleanUrl.replace('public/', '');
+
+    // Now if it's an avatar file, it will cleanly resolve
+    if (cleanUrl.includes('avatars/avatar')) {
+      const match = cleanUrl.match(/avatars\/avatar[0-9]+-(intro|outro)\.mp4/);
+      if (match) return staticFile(match[0]);
+    }
+
+    // If it's still a remote HTTP url (like S3/Cloudfront), use it directly
+    if (cleanUrl.startsWith('http')) {
+      return cleanUrl;
+    }
+
+    // Otherwise, ensure it doesn't have a leading slash for staticFile
+    const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
+    return staticFile(finalUrl);
+  }, [videoUrl]);
+
+  const resolvedAudioUrl = useMemo(() => {
+    if (!audioUrl) return "";
+    if (audioUrl.startsWith('http')) {
+      return audioUrl;
+    }
+    return staticFile(audioUrl);
+  }, [audioUrl]);
+
+  // Stretch/compress the avatar video to fill the entire sequence duration.
+  // Without this, Remotion crashes with "No frame found at position" when
+  // the TTS audio (and thus the sequence) is longer than the video file.
+  const pbRate = useMemo(() => {
+    if (!videoDurationSec || !durationInFrames) return 1;
+    const targetDurationSec = durationInFrames / fps;
+    // ratio > 1 means speed up (video longer than sequence)
+    // ratio < 1 means slow down (video shorter than sequence)
+    const rate = (videoDurationSec / targetDurationSec) * 0.99; // 0.99x ensures we NEVER seek past the last frame
+    // Clamp to safe range (0.25x to 4x)
+    return Math.max(0.25, Math.min(4, rate));
+  }, [videoDurationSec, durationInFrames, fps]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
       {/* Muted HeyGen video — lip movements visible, no original audio */}
-      <Video
+      <OffthreadVideo
         src={resolvedVideoUrl}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         muted={true}
+        crossOrigin="anonymous"
+        playbackRate={pbRate}
+        toneMapped={false}
       />
       {/* Sarvam-generated English voice audio */}
-      {audioUrl && <Audio src={audioUrl} />}
+      {resolvedAudioUrl && <Audio src={resolvedAudioUrl} crossOrigin="anonymous" />}
     </AbsoluteFill>
   );
 };
@@ -129,6 +191,62 @@ const VideoScene: React.FC<{
           objectFit: 'cover',
           ...animationStyle,
         }}
+        crossOrigin="anonymous"
+      />
+    </AbsoluteFill>
+  );
+};
+
+const VideoClipScene: React.FC<{
+  videoUrl: string;
+  duration: number; // in frames (target sequence duration)
+  sourceDuration?: number; // in seconds (actual AI video duration)
+}> = ({ videoUrl, duration, sourceDuration }) => {
+  const { fps } = useVideoConfig();
+
+  // Stable useMemo prevents jittering on every frame.
+  const resolvedVideoUrl = useMemo(() => {
+    let cleanUrl = videoUrl;
+
+    if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
+      try {
+        const urlObj = new URL(cleanUrl);
+        cleanUrl = urlObj.pathname;
+      } catch (e) {}
+    }
+
+    if (cleanUrl.startsWith('/public/')) cleanUrl = cleanUrl.replace('/public/', '');
+    if (cleanUrl.startsWith('public/')) cleanUrl = cleanUrl.replace('public/', '');
+
+    if (cleanUrl.startsWith('http')) {
+      return cleanUrl;
+    }
+    const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
+    return staticFile(finalUrl);
+  }, [videoUrl]);
+
+  // Calculate playbackRate: sourceDuration (sec) / targetDuration (sec)
+  const targetDurationSec = duration / fps;
+  const pbRate = useMemo(() => {
+    if (!sourceDuration) return 1; // Fallback to normal speed
+    // 0.99x ensures we NEVER seek past the last frame of the source video
+    return (sourceDuration / targetDurationSec) * 0.99;
+  }, [sourceDuration, targetDurationSec]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black' }}>
+      {/* OffthreadVideo prevents jittering when stretching video with playbackRate */}
+      <OffthreadVideo
+        src={resolvedVideoUrl}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+        }}
+        muted={true}
+        playbackRate={pbRate}
+        crossOrigin="anonymous"
+        toneMapped={false}
       />
     </AbsoluteFill>
   );
@@ -139,11 +257,12 @@ const Captions: React.FC<{
   segments: CaptionSegment[];
   styleId?: string;
   language?: string;
-  offsetSec?: number; // seconds to subtract from current time (intro offset)
-}> = ({ segments, styleId = 'bold-pop', language = 'en-IN', offsetSec = 0 }) => {
+}> = ({ segments, styleId = 'bold-pop', language = 'en-IN' }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const currentTime = frame / fps - offsetSec;
+  // Sequence automatically resets the frame to 0 at the start of the content section
+  const SYNC_OFFSET = 0.30; // seconds to offset captions (positive = earlier)
+  const currentTime = (frame / fps) + SYNC_OFFSET;
 
   const style = useMemo(() =>
     captionStyles.find(s => s.id === styleId) || captionStyles[0],
@@ -227,6 +346,8 @@ const Captions: React.FC<{
 // ─── Main Composition ─────────────────────────────────────────────────────────
 export const MainComposition: React.FC<CompositionProps> = ({
   imageUrls,
+  sceneVideoUrls,
+  sceneVideoDurations,
   introClip,
   outroClip,
   audioUrl,
@@ -239,7 +360,8 @@ export const MainComposition: React.FC<CompositionProps> = ({
   const { durationInFrames, fps } = useVideoConfig();
 
   // ── Timeline math ─────────────────────────────────────────────────────────
-  const BRIDGE_FRAMES = 15; // 0.5s crossfade at transitions
+  const BRIDGE_FRAMES = 30; // 1.0s crossfade at intro/outro transitions (smoother)
+  const CAPTION_DELAY_FRAMES = 0; // Removed delay as requested
 
   const introFrames = introClip ? Math.round(introClip.durationSec * fps) : 0;
   const outroFrames = outroClip ? Math.round(outroClip.durationSec * fps) : 0;
@@ -251,21 +373,17 @@ export const MainComposition: React.FC<CompositionProps> = ({
   // Outro starts after content
   const outroStart = contentStart + contentFrames;
 
-  // ── Caption offset: captions are timed relative to narration audio (0-based)
-  // but they play during content section which starts at contentStart in the timeline
-  const captionOffsetSec = introClip ? introClip.durationSec : 0;
-
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
       {/* ── Background Music: runs throughout entire video ── */}
-      {musicUrl && <Audio src={musicUrl} volume={0.12} loop />}
+      {musicUrl && <Audio src={musicUrl} volume={0.12} loop crossOrigin="anonymous" />}
 
       {/* ══════════════════════════════════════════════════
           INTRO SECTION — HeyGen avatar clip (English)
       ══════════════════════════════════════════════════ */}
       {introClip && (
         <Sequence from={0} durationInFrames={introFrames}>
-          <AvatarClipScene videoUrl={introClip.videoUrl} audioUrl={introClip.audioUrl} />
+          <AvatarClipScene videoUrl={introClip.videoUrl} audioUrl={introClip.audioUrl} durationInFrames={introFrames} videoDurationSec={introClip.videoDurationSec} />
         </Sequence>
       )}
 
@@ -283,29 +401,44 @@ export const MainComposition: React.FC<CompositionProps> = ({
       {/* Main narration audio: starts at contentStart, plays for audioDuration */}
       {audioUrl && (
         <Sequence from={contentStart} durationInFrames={contentFrames}>
-          <Audio src={audioUrl} />
+          <Audio src={audioUrl} crossOrigin="anonymous" />
         </Sequence>
       )}
 
-      {/* AI image scenes */}
-      {imageUrls?.filter(url => url).map((url, i) => (
-        <Sequence
-          key={i}
-          from={contentStart + i * sceneDuration}
-          durationInFrames={sceneDuration}
-        >
-          <VideoScene imageUrl={url} duration={sceneDuration} index={i} />
-        </Sequence>
-      ))}
+      {/* AI scene clips: use video if available, fallback to static image */}
+      {imageUrls?.map((url, i) => {
+        const sceneVideoUrl = sceneVideoUrls?.[i];
+        const isSkipMarker = !url || url === 'SKIP_T2V' || url === 'SKIP_VEO' || url === '';
+        // Skip scenes with no image AND no video
+        if (isSkipMarker && !sceneVideoUrl) return null;
+        return (
+          <Sequence
+            key={i}
+            from={contentStart + i * sceneDuration}
+            durationInFrames={sceneDuration}
+          >
+            {sceneVideoUrl ? (
+              <VideoClipScene 
+                videoUrl={sceneVideoUrl} 
+                duration={sceneDuration} 
+                sourceDuration={sceneVideoDurations?.[i]}
+              />
+            ) : !isSkipMarker ? (
+              <VideoScene imageUrl={url} duration={sceneDuration} index={i} />
+            ) : (
+              <AbsoluteFill style={{ backgroundColor: 'black' }} />
+            )}
+          </Sequence>
+        );
+      })}
 
-      {/* Captions: only during content section, timestamps offset by intro duration */}
+      {/* Captions: delayed by 2 seconds to sync with audio playback */}
       {captionData?.segments && (
-        <Sequence from={contentStart} durationInFrames={contentFrames}>
+        <Sequence from={contentStart + CAPTION_DELAY_FRAMES} durationInFrames={contentFrames - CAPTION_DELAY_FRAMES}>
           <Captions
             segments={captionData.segments}
             styleId={captionStyle}
             language={language}
-            offsetSec={captionOffsetSec}
           />
         </Sequence>
       )}
@@ -322,7 +455,7 @@ export const MainComposition: React.FC<CompositionProps> = ({
       ══════════════════════════════════════════════════ */}
       {outroClip && (
         <Sequence from={outroStart} durationInFrames={outroFrames}>
-          <AvatarClipScene videoUrl={outroClip.videoUrl} audioUrl={outroClip.audioUrl} />
+          <AvatarClipScene videoUrl={outroClip.videoUrl} audioUrl={outroClip.audioUrl} durationInFrames={outroFrames} videoDurationSec={outroClip.videoDurationSec} />
         </Sequence>
       )}
     </AbsoluteFill>

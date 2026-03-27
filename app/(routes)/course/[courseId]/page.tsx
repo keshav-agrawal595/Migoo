@@ -22,17 +22,20 @@ function CoursePage() {
         try {
             const res = await axios.get(`/api/course?courseId=${courseId}`);
 
-            setCourseDetails(res.data);
+            // apiSuccess wraps response as { success, data: { ...course, chapterContentSlides }, timestamp }
+            const courseData = res.data?.data ?? res.data;
+
+            setCourseDetails(courseData);
             toast.success("Course Details Fetched Successfully!", {
                 id: loadingToast
             });
 
             // Check which chapters already have slides in the DB
-            const existingSlides = res.data?.chapterContentSlides || [];
+            const existingSlides = courseData?.chapterContentSlides || [];
             const existingChapterIds = new Set(
                 existingSlides.map((slide: any) => slide.chapterId)
             );
-            const allChapters = res.data?.courseLayout?.chapters || [];
+            const allChapters = courseData?.courseLayout?.chapters || [];
             const missingChapters = allChapters.filter(
                 (ch: any) => !existingChapterIds.has(ch.chapterId)
             );
@@ -41,7 +44,7 @@ function CoursePage() {
                 if (!isGenerating.current && !hasGenerated.current) {
                     console.log(`✅ ${missingChapters.length} chapter(s) missing slides, generating content...`);
                     console.log("Missing chapters:", missingChapters.map((ch: any) => ch.chapterTitle));
-                    GenerateVideoContent(res.data);
+                    GenerateVideoContent(courseData);
                 } else if (hasGenerated.current) {
                     console.log("✅ Generation already completed (some chapters may be skipped in testing mode)");
                 } else {
@@ -56,13 +59,13 @@ function CoursePage() {
             // ═══════════════════════════════════════════════════════════════════
             // AUTO THUMBNAIL GENERATION (New or Migrate S3)
             // ═══════════════════════════════════════════════════════════════════
-            const hasThumbnail = !!res.data?.courseThumbnail;
-            const isExternal = hasThumbnail && res.data.courseThumbnail.startsWith('http');
+            const hasThumbnail = !!courseData?.courseThumbnail;
+            const isExternal = hasThumbnail && courseData.courseThumbnail.startsWith('http');
 
-            if ((!hasThumbnail || isExternal) && res.data?.courseId && res.data?.courseName) {
+            if ((!hasThumbnail || isExternal) && courseData?.courseId && courseData?.courseName) {
                 axios.post('/api/generate-thumbnail', {
-                    courseId: res.data.courseId,
-                    courseName: res.data.courseName
+                    courseId: courseData.courseId,
+                    courseName: courseData.courseName
                 }).then(thumbRes => {
                     // Refresh details to get the new thumbnail URL
                     if (thumbRes.data?.success) {

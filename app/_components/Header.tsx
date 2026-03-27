@@ -27,13 +27,6 @@ function Header() {
                     </Link>
                 </div>
 
-                {/* Center: Home link (course detail only) */}
-                {isCourseDetailPage && (
-                    <div className='flex gap-8 items-center'>
-                        <Link href="/" className='text-lg hover:text-primary transition-colors cursor-pointer'>Home</Link>
-                    </div>
-                )}
-
                 {/* Right: User Avatar */}
                 <div className='flex items-center ml-auto'>
                     <UserButton afterSignOutUrl="/" />

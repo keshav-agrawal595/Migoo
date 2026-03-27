@@ -102,12 +102,17 @@ export const shortVideoAssets = pgTable("short_video_assets", {
 
     // Image data from step 5
     imageUrls: json("image_urls"),                       // ["url1", "url2", ...] per scene
+
+    // Scene video data from step 5.25 (image-to-video conversion)
+    sceneVideoUrls: json("scene_video_urls"),            // ["videoUrl1", "videoUrl2", ...] per scene
+    sceneThumbnailUrls: json("scene_thumbnail_urls"),    // ["thumbUrl1", "thumbUrl2", ...] per scene
     
     // Avatar clip data from step 5.5
     avatarClipUrls: json("avatar_clip_urls"),            // ["", "", "url3", "", "", "url6"] per scene
 
     // Final rendered video
     videoUrl: text("video_url"),
+    thumbnailUrl: text("thumbnail_url"),
 
     // Status
     status: varchar({ length: 50 }).default("completed"), // generating | completed | failed

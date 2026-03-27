@@ -119,10 +119,10 @@ export async function POST(req: NextRequest) {
                 const prompt = buildImagePrompt(courseName, chapterTitle, topicsForImages[imgIdx], globalIndex);
 
                 try {
-                    // 1024:1024 — square for course slides via RunwayML Gemini 2.5 Flash
-                    console.log(`  📸 [${globalIndex + 1}] Generating image with RunwayML Gemini 2.5 Flash...`);
-                    const leonardoUrl = await generateRunwayImage(prompt, "1024:1024");
-                    console.log(`  ✅ RunwayML URL: ${leonardoUrl.substring(0, 60)}...`);
+                    // 1:1 — square for course slides via Nano Banana (Gemini 2.5 Flash Image)
+                    console.log(`  📸 [${globalIndex + 1}] Generating image with Nano Banana...`);
+                    const leonardoUrl = await generateRunwayImage(prompt, "1:1");
+                    console.log(`  ✅ Nano Banana URL: ${leonardoUrl.substring(0, 60)}...`);
 
                     // ⬇️ DOWNLOAD & UPLOAD TO VERCEL BLOB (PERSISTENCE FIX) ⬇️
                     console.log(`  CLOUD UPLOAD: Saving to Vercel Blob...`);
@@ -174,7 +174,7 @@ export async function POST(req: NextRequest) {
             data: generatedImages,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'runway-gemini-2.5-flash',
+                engine: 'nano-banana-gemini-2.5-flash-image',
                 courseId,
                 totalRequested: totalExpected,
                 totalGenerated: generatedImages.length,

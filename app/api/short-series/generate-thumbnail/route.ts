@@ -1,6 +1,6 @@
 import { db } from "@/config/db";
 import { shortVideoSeries } from "@/config/schema";
-import { generateRunwayImage } from "@/lib/runway";
+import { generateNanoBananaImage } from "@/lib/leonardo";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
@@ -106,12 +106,10 @@ export async function POST(req: NextRequest) {
             }
         }
 
-        // Generate via Nano Banana 2
-        const prompt = buildShortsThumbnailPrompt(title, niche || 'creative');
-        console.log('📸 Prompt:', prompt);
+        const prompt = buildShortsThumbnailPrompt(title, niche || 'general');
+        console.log('📸 Thumbnail prompt:', prompt.substring(0, 100));
 
-        // Generate via RunwayML Gemini 2.5 Flash — 1344:768 landscape for dashboard cards
-        const signedUrl = await generateRunwayImage(prompt, "1344:768");
+        const signedUrl = await generateNanoBananaImage(prompt, 1024, 1024);
         const localPath = await downloadAndSaveThumbnail(signedUrl, seriesId);
 
         // Update DB

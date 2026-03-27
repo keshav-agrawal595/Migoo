@@ -43,10 +43,12 @@ function CourseList() {
     try {
       setLoading(true);
       const result = await axios.get('/api/course');
-      setCourseList(result.data);
+      // apiSuccess wraps response as { success, data, timestamp }
+      const courses = Array.isArray(result.data) ? result.data : (result.data?.data || []);
+      setCourseList(courses);
 
       // Auto-generate thumbnails for courses that don't have one yet
-      const coursesWithoutThumbnail = result.data.filter(
+      const coursesWithoutThumbnail = courses.filter(
         (course: any) => !course.courseThumbnail
       );
 
@@ -74,7 +76,8 @@ function CourseList() {
     }
     // Refresh list to show newly generated thumbnails
     const refreshed = await axios.get('/api/course');
-    setCourseList(refreshed.data);
+    const refreshedCourses = Array.isArray(refreshed.data) ? refreshed.data : (refreshed.data?.data || []);
+    setCourseList(refreshedCourses);
   }
 
   return (

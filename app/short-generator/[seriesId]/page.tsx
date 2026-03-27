@@ -60,7 +60,10 @@ interface VideoAsset {
     audioDuration: number | null
     captionData: any
     imageUrls: string[] | null
+    sceneThumbnailUrls: string[] | null
+    avatarClipUrls: string[] | null
     videoUrl: string | null
+    thumbnailUrl: string | null
     status: string | null
     createdAt: string
 }
@@ -453,9 +456,9 @@ function SeriesVideosPageContent() {
                     >
                         {/* Thumbnail / First scene image */}
                         <div className="relative h-44 bg-linear-to-br from-primary/20 via-accent/10 to-secondary/20 overflow-hidden">
-                            {video.imageUrls && video.imageUrls.length > 0 && video.imageUrls[0] ? (
+                            {(video.thumbnailUrl || (video.imageUrls && video.imageUrls.length > 0 && video.imageUrls[0] && video.imageUrls[0] !== "SKIP_VEO")) ? (
                                 <Image
-                                    src={video.imageUrls[0]}
+                                    src={video.thumbnailUrl || video.imageUrls![0]}
                                     alt={video.videoTitle}
                                     fill
                                     className="object-cover group-hover:scale-105 transition-transform duration-500"
@@ -483,11 +486,19 @@ function SeriesVideosPageContent() {
                                 )}
                             </div>
 
-                            {/* Duration badge */}
+                            {/* Duration badge — includes intro + narration + outro */}
                             {video.audioDuration && (
                                 <div className="absolute bottom-3 right-3 flex items-center gap-1 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm text-white text-[11px] font-medium">
                                     <Clock className="w-3 h-3" />
-                                    {Math.floor((video.audioDuration || 0) / 60)}:{Math.floor((video.audioDuration || 0) % 60).toString().padStart(2, '0')}
+                                    {(() => {
+                                        // Total = intro (~9s avg) + narration audio + outro (~9.5s avg)
+                                        const INTRO_DURATION = 9;
+                                        const OUTRO_DURATION = 9.5;
+                                        const totalSec = (video.audioDuration || 0) + INTRO_DURATION + OUTRO_DURATION;
+                                        const mins = Math.floor(totalSec / 60);
+                                        const secs = Math.floor(totalSec % 60);
+                                        return `${mins}:${secs.toString().padStart(2, '0')}`;
+                                    })()}
                                 </div>
                             )}
 

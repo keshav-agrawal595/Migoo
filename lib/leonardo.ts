@@ -4,11 +4,15 @@
 
 const LEONARDO_KEY_NAMES = [
     "LEONARDO_API_KEY",
+    "LEONARDO_API_KEY1",
     "LEONARDO_API_KEY2",
     "LEONARDO_API_KEY3",
     "LEONARDO_API_KEY4",
     "LEONARDO_API_KEY5",
     "LEONARDO_API_KEY6",
+    "LEONARDO_API_KEY7",
+    "LEONARDO_API_KEY8",
+    "LEONARDO_API_KEY9",
 ];
 
 const FLUX_SCHNELL_MODEL_ID = "1dd50843-d653-4516-a8e3-f0238ee453ff";
@@ -356,7 +360,7 @@ async function submitLucidOriginJob(
 export async function generateLucidOriginImage(
     prompt: string,
     width: number = 768,
-    height: number = 1376,
+    height: number = 1344,
     styleUUID?: string,
     contrast: number = 3.5
 ): Promise<string> {
@@ -372,7 +376,7 @@ export async function generateLucidOriginImage(
 export async function generateLucidRealismImage(
     prompt: string,
     width: number = 768,
-    height: number = 1376,
+    height: number = 1344,
     styleUUID?: string,
     contrast: number = 3.5
 ): Promise<string> {
@@ -445,7 +449,7 @@ async function submitLeonardoJobWithModel(
 export async function generateNanoBananaImage(
     prompt: string,
     width: number = 768,
-    height: number = 1376,
+    height: number = 1344,
     styleUUID?: string
 ): Promise<string> {
     // Enhance the prompt for best realistic output

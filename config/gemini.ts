@@ -23,9 +23,9 @@ class GeminiClient {
     private baseUrl: string = 'https://generativelanguage.googleapis.com/v1beta';
 
     constructor() {
-        this.apiKey = process.env.GEMINI_API_KEY || '';
+        this.apiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_IMAGE || '';
         if (!this.apiKey) {
-            throw new Error('GEMINI_API_KEY is not set in environment variables');
+            throw new Error('Neither GEMINI_API_KEY nor GEMINI_API_KEY_IMAGE is set in environment variables');
         }
     }
 

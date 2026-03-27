@@ -43,9 +43,9 @@ async function transcode(input, output) {
     // -bf 0         → no B-frames
     // -refs 1       → single reference frame
     // -pix_fmt yuv420p → broad compatibility
-    // -an           → strip audio (we play our own TTS audio in Remotion)
-    // NO -movflags +faststart (can confuse some decoders)
-    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -r 30 -vsync cfr -c:v libx264 -crf 20 -g 1 -keyint_min 1 -bf 0 -refs 1 -pix_fmt yuv420p -an "${outputPath}"`;
+    // -an              → strip audio (we play our own TTS audio in Remotion)
+    // -movflags +faststart → moov atom at file start for instant seeking (required by Remotion compositor)
+    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -r 30 -vsync cfr -c:v libx264 -crf 20 -g 1 -keyint_min 1 -bf 0 -refs 1 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
 
     console.log(`🎬 Re-transcoding (all-keyframe): ${input} → ${output}`);
     return new Promise((resolve, reject) =>

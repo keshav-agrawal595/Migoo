@@ -3,18 +3,15 @@ import { gemini } from "@/config/gemini";
 import { shortVideoAssets, shortVideoSeries } from "@/config/schema";
 import { putWithRotation } from "@/lib/blob";
 import { getMusicUrl } from "@/lib/music-urls";
-import { generateRunwayImage, ContentModerationError } from "@/lib/runway";
+import { ContentModerationError } from "@/lib/runway";
 import { generateNanoBananaImage } from "@/lib/leonardo";
+import { generateLeonardoVideo, generateLeonardoTextVideo } from "@/lib/leonardo-video";
 import { triggerRender } from "@/lib/video-render";
 import { and, eq, or } from "drizzle-orm";
 import { inngest } from "./client";
 
 // ─── HeyGen Avatar Clip Configuration ────────────────────────────────────────
 
-// Local CFR-transcoded avatar clips (public/avatars/*.mp4)
-// These are pre-transcoded to 30fps CFR / all-keyframe for reliable Remotion rendering.
-// Paths are relative to public/ — served via staticFile() in Remotion.
-// videoDurationSec = actual duration probed from the CFR file.
 const AVATAR_CLIPS = {
     intro: {
         avatar1: {
@@ -177,18 +174,28 @@ async function generateEnglishTTS(
 function sanitizeForTTS(text: string): string {
     return text
         .replace(/<[^>]*>/g, ' ')
-        .replace(/\s+/g, ' ')
         .replace(/[\u200B-\u200D\uFEFF]/g, '')
         .replace(/[\u2018\u2019]/g, "'")
         .replace(/[\u201C\u201D]/g, '"')
         .replace(/[•◦▪▫]/g, '-')
         .replace(/[…]/g, '...')
         .replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, '')
-        .replace(/\.{4,}/g, '...')
+        .replace(/\.{4,}/g, '.')
+        .replace(/\.{2,3}/g, '.')           // Collapse ellipses to single period — prevents TTS pausing/stretching
         .replace(/!{2,}/g, '!')
         .replace(/\?{2,}/g, '?')
+        .replace(/-{2,}/g, '-')              // Collapse repeated dashes
+        .replace(/,{2,}/g, ',')
         .replace(/([.!?])([A-Z])/g, '$1 $2')
-        .replace(/[*_#]/g, '') // Remove markdown formatting that avatars might read out loud
+        .replace(/[*_#~`]/g, '')             // Remove markdown formatting
+        .replace(/\(.*?\)/g, '')             // Remove parenthetical asides — they confuse TTS pacing
+        .replace(/\[.*?\]/g, '')             // Remove bracketed text
+        .replace(/([a-zA-Z])\1{2,}/g, '$1$1') // Collapse repeated characters: "soooo" → "soo", "amaziiing" → "amaziing"
+        .replace(/:\s/g, '. ')               // Replace colons with periods for cleaner TTS breaks
+        .replace(/;\s/g, '. ')               // Replace semicolons with periods
+        .replace(/—/g, ', ')                 // Replace em-dashes with comma
+        .replace(/–/g, ', ')                 // Replace en-dashes with comma
+        .replace(/\s+/g, ' ')
         .trim();
 }
 
@@ -409,7 +416,15 @@ SCRIPT REQUIREMENTS:
 2. STRUCTURE: You MUST use explicit keys ("scene1", "scene2"..."scene6") instead of an array.
 3. LANGUAGE & NATIVE FLOW: Write ENTIRELY in ${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}. You MUST use natural, native-sounding phrasing. Do NOT just translate English idioms literally. The narration MUST flow seamlessly and logically from one scene to the next.
 4. NARRATION STYLE: Write a seamless, highly engaging story or compelling argument. Do NOT use meta-commentary, structural announcements, or "content framing" (e.g., NEVER say "Scene 1", "Here is a story about...", "Welcome to the video"). Start directly with the hook. The points MUST be highly interesting and directly address the user's title. Each scene must have 40-50 words (3-4 descriptive sentences).
-5. IMAGE PROMPTS: Write highly detailed, masterpiece-level image generation prompts (20-30 words) focusing on cinematic lighting, photorealism, and striking visuals. DO NOT write ugly or generic descriptions.
+5. IMAGE PROMPTS (CRITICAL — DETAILED): For scenes categorized as 'monument', write EXTREMELY detailed, masterpiece-level image generation prompts (30-50 words). Include: specific subject, exact architectural details, lighting direction and quality (golden hour, dramatic side-lighting, soft diffused), camera angle (low angle, eye level, aerial), atmosphere (misty, clear, hazy), color palette, texture details, and photographic style (DSLR, 85mm lens, f/2.8). These prompts will be used by Leonardo AI Nano Banana 2 model for photorealistic image generation.
+6. VIDEO PROMPTS (CRITICAL — DETAILED): For EVERY scene, write an extremely detailed "videoPrompt" (30-50 words) describing a cinematic video clip. Include: specific camera movements (slow dolly-in, sweeping crane shot, tracking shot left-to-right, push-in zoom), environmental motion (swaying trees, flowing water, drifting clouds, flickering fire, dust particles), lighting transitions (sunrise to golden hour, shadow play), and atmospheric effects (lens flare, volumetric fog, rain, snow). These prompts are used by Leonardo Seedance 1.0 Pro Fast for video generation — the more detailed, the better the output.
+7. THUMBNAIL PROMPT (CRITICAL): Generate a highly specific, stunning, and click-worthy "thumbnailPrompt" (30-40 words) for the video's cover image. This prompt will be used by Nano Banana 2 (Leonardo AI) to create a cinematic, masterpiece-level thumbnail. ⚠️ IMPORTANT: The thumbnail MUST NOT contain any text, words, letters, or numbers. Focus ONLY on visual storytelling. CRITICAL: NO TEXT, NO WORDS, NO LETTERS.
+8. SCENE CATEGORIZATION (CRITICAL): You MUST accurately categorize each scene's content:
+   - Set "sceneCategory" to 'monument' if the scene features a REAL monument, real architecture, real historical site, real person who exists/existed in reality, real landmark, or anything that exists in the real world and would benefit from photorealistic image generation.
+   - Set "sceneCategory" to 'living_thing' if the scene features fictional/generic people, animals, or any living creatures (not real historical figures).
+   - Set "sceneCategory" to 'general' for abstract concepts, graphics, text overlays, or anything else.
+   NOTE: Scenes categorized as 'monument' will get a Nano Banana 2 photorealistic image first, then converted to video. All other scenes will get direct text-to-video generation. So categorize wisely for best visual results!
+9. TTS FORMATTING: Do NOT use ellipses (...), em-dashes (—), en-dashes (–), colons (:), semicolons (;), ALL CAPS, parenthetical asides, or excessive punctuation in the narration. Do NOT use elongated/stretched words like "soooo", "amaziiing", "reaaally" etc. Write clean, short, grammatically correct sentences using only periods, commas, question marks, and exclamation marks. Use the target language (${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}) with natural pacing. This is CRITICAL to prevent the Text-To-Speech engine from unnaturally stretching words or pausing too long.
 
 JSON SCHEMA:
 Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exactly this wrapped in <json> tags:
@@ -417,17 +432,22 @@ Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exact
 <json>
 {
   "videoTitle": "compelling viral title",
+  "thumbnailPrompt": "A stunning, click-worthy visual prompt for the video's cover image...",
   "totalScenes": ${sceneCount},
   "totalWordCount": 250,
   "scene1": {
     "narration": "Gripping segment with NO intro framing (40-50 words)...",
-    "imagePrompt": "Cinematic, photorealistic masterpiece visual description...",
+    "imagePrompt": "Ultra-detailed visual description for Nano Banana 2 image generation (30-50 words, cinematic, photorealistic)...",
+    "videoPrompt": "Extremely detailed animation/video description for Seedance 1.0 Pro Fast (30-50 words, camera movements, environmental effects, lighting)...",
+    "sceneCategory": "monument",
     "duration": 15,
     "wordCount": 45
   },
   "scene2": {
     "narration": "Seamlessly continuing segment...",
-    "imagePrompt": "Next cinematic visual...",
+    "imagePrompt": "Ultra-detailed visual description...",
+    "videoPrompt": "Extremely detailed animation description...",
+    "sceneCategory": "general",
     "duration": 15,
     "wordCount": 45
   },
@@ -783,21 +803,64 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 // Clean up temp file on error
                 try { fs.unlinkSync(tempFilePath); } catch { }
                 console.error(`❌ Sarvam Batch STT Error: ${error.message}`);
-                throw error;
+                console.log(`⚠️ Falling back to estimated word timestamps from narration text...`);
+
+                // Fallback: estimate timestamps from script narration
+                const fullNarration = scriptData.scenes
+                    .map((s: any) => s.narration)
+                    .join(' ');
+                const words = fullNarration.split(/\s+/);
+                const totalDuration = voiceData.audioDuration || 60;
+                const avgWordDuration = totalDuration / words.length;
+
+                const timestamps: Array<{ word: string; start: number; end: number }> = [];
+                words.forEach((w: string, i: number) => {
+                    timestamps.push({
+                        word: w,
+                        start: +(i * avgWordDuration).toFixed(2),
+                        end: +((i + 1) * avgWordDuration).toFixed(2),
+                    });
+                });
+
+                // Group words into caption segments (~4 words each)
+                const WORDS_PER_SEGMENT = 4;
+                const segments: Array<{
+                    text: string;
+                    start: number;
+                    end: number;
+                    words: typeof timestamps;
+                }> = [];
+
+                for (let i = 0; i < timestamps.length; i += WORDS_PER_SEGMENT) {
+                    const group = timestamps.slice(i, i + WORDS_PER_SEGMENT);
+                    segments.push({
+                        text: group.map(w => w.word).join(' '),
+                        start: group[0].start,
+                        end: group[group.length - 1].end,
+                        words: group,
+                    });
+                }
+
+                console.log(`✅ Fallback: Created ${segments.length} estimated caption segments from ${words.length} words`);
+
+                return {
+                    transcript: fullNarration,
+                    language: seriesData.language,
+                    wordTimestamps: timestamps,
+                    segments,
+                };
             }
         });
 
         // Update status: generating images
         await step.run("update-status-images", () => updateSeriesStatus(seriesId, "generating:images"));
 
-        // Step 5: Generate Images — RunwayML primary, Leonardo Nano Banana fallback
+        // Step 5: Generate Images — Nano Banana (Gemini 2.5 Flash Image)
         const imageData = await step.run("generate-images", async () => {
             console.log(`🖼️ Generating images for: "${seriesData.title}"`);
             console.log(`📸 Scenes to generate: ${scriptData.scenes?.length}`);
 
-            const IMAGE_RATIO = "768:1344"; // RunwayML portrait for vertical shorts (9:16)
-            const LEONARDO_WIDTH = 768;      // Leonardo portrait dimensions
-            const LEONARDO_HEIGHT = 1376;
+            const IMAGE_RATIO = "9:16"; // Portrait for vertical shorts
             const MAX_RETRIES_PER_SCENE = 3;
             const totalScenes = scriptData.scenes.length;
             const imageUrls: string[] = new Array(totalScenes).fill("");
@@ -814,82 +877,72 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 return false;
             }
 
-            // ── Helper: try Leonardo Nano Banana as fallback ──
-            async function tryLeonardoFallback(prompt: string, sceneNum: number): Promise<string | null> {
-                console.log(`🎨 Falling back to Leonardo Nano Banana for Scene ${sceneNum}...`);
-                try {
-                    const imageUrl = await generateNanoBananaImage(prompt, LEONARDO_WIDTH, LEONARDO_HEIGHT);
-                    console.log(`✅ Leonardo fallback succeeded for Scene ${sceneNum}: ${imageUrl.substring(0, 60)}...`);
-                    return imageUrl;
-                } catch (err: any) {
-                    console.error(`❌ Leonardo fallback also failed for Scene ${sceneNum}: ${err?.message || err}`);
-                    return null;
-                }
-            }
-
             // ── Generate all scenes ────────────────────────────────
             for (let i = 0; i < totalScenes; i++) {
                 if (await isForceStoppedCheck()) break;
 
-                const prompt = scriptData.scenes[i].imagePrompt;
+                const scene = scriptData.scenes[i];
+
+                const prompt = scene.imagePrompt || scene.narration || "Cinematic scene illustration";
                 console.log(`🖼️ Scene ${i + 1}/${totalScenes}: "${prompt.substring(0, 80)}..."`);
 
                 let success = false;
 
-                // Try RunwayML first (with retries for non-moderation errors)
+                let attemptMode = scene.sceneCategory || "general";
+
+                // Only monument scenes get image generation (Nano Banana 2)
+                // living_thing and general scenes skip to direct text-to-video via Seedance
+                if (attemptMode === "living_thing") {
+                    console.log(`🧍 Scene ${i + 1} features a living_thing, skipping image generation for direct Seedance Text-to-Video.`);
+                    imageUrls[i] = "SKIP_T2V";
+                    continue;
+                }
+
+                if (attemptMode === "general") {
+                    console.log(`🎬 Scene ${i + 1} is general, skipping image generation for direct Seedance Text-to-Video.`);
+                    imageUrls[i] = "SKIP_T2V";
+                    continue;
+                }
+
+                // Monument scenes: generate photorealistic image with Nano Banana 2
                 for (let attempt = 1; attempt <= MAX_RETRIES_PER_SCENE; attempt++) {
                     if (await isForceStoppedCheck()) break;
 
                     try {
-                        const imageUrl = await generateRunwayImage(prompt, IMAGE_RATIO);
+                        console.log(`🏛️ Scene ${i + 1} features a monument/real subject, using Leonardo Nano Banana 2...`);
+                        const imageUrl = await generateNanoBananaImage(prompt, 768, 1344);
+                        
                         imageUrls[i] = imageUrl;
-                        console.log(`✅ Scene ${i + 1} image (RunwayML, attempt ${attempt}): ${imageUrl.substring(0, 60)}...`);
+                        console.log(`✅ Scene ${i + 1} Nano Banana 2 image (attempt ${attempt}): ${imageUrl.substring(0, 60)}...`);
                         success = true;
                         break;
                     } catch (err: any) {
-                        console.error(`❌ Scene ${i + 1} RunwayML attempt ${attempt}/${MAX_RETRIES_PER_SCENE} FAILED: ${err?.message || err}`);
+                        console.error(`❌ Scene ${i + 1} image generation attempt ${attempt}/${MAX_RETRIES_PER_SCENE} FAILED: ${err?.message || err}`);
 
-                        // Content moderation or generation failure → immediately switch to Leonardo
-                        if (err instanceof ContentModerationError || err?.message?.includes('content moderation') || err?.message?.includes('Failed to generate')) {
-                            console.log(`🛡️ Content moderation blocked Scene ${i + 1}. Switching to Leonardo Nano Banana...`);
-                            const fallbackUrl = await tryLeonardoFallback(prompt, i + 1);
-                            if (fallbackUrl) {
-                                imageUrls[i] = fallbackUrl;
-                                success = true;
-                            }
-                            break; // Don't retry RunwayML for moderation errors
+                        // Content moderation — skip retries
+                        if (err instanceof ContentModerationError || err?.message?.includes('content moderation')) {
+                            console.log(`🛡️ Content moderation blocked Scene ${i + 1}. Falling back to text-to-video.`);
+                            imageUrls[i] = "SKIP_T2V";
+                            break;
                         }
 
-                        // For other errors (rate limit, network), retry with backoff
+                        // For other errors, retry with backoff
                         if (attempt < MAX_RETRIES_PER_SCENE) {
                             const backoff = Math.min(5000 * Math.pow(2, attempt - 1), 30000) + Math.random() * 3000;
                             console.log(`⏳ Retrying scene ${i + 1} in ${Math.round(backoff)}ms...`);
                             await new Promise(r => setTimeout(r, backoff));
+                        } else {
+                            // All retries exhausted, fall back to text-to-video
+                            console.log(`⚠️ Scene ${i + 1} image gen exhausted retries. Falling back to text-to-video.`);
+                            imageUrls[i] = "SKIP_T2V";
                         }
                     }
                 }
 
                 // Rate-limit between scenes
                 if (i < totalScenes - 1) {
-                    const delay = 3000 + Math.random() * 2000;
+                    const delay = 2000 + Math.random() * 1000;
                     await new Promise(r => setTimeout(r, delay));
-                }
-            }
-
-            // ── Sweep: use Leonardo for any remaining empty scenes ───
-            if (!(await isForceStoppedCheck())) {
-                const failedIndices = imageUrls.map((url, i) => url === "" ? i : -1).filter(i => i !== -1);
-
-                if (failedIndices.length > 0) {
-                    console.log(`🔄 Sweep: ${failedIndices.length} scenes still missing. Trying Leonardo for each...`);
-                    for (const idx of failedIndices) {
-                        if (await isForceStoppedCheck()) break;
-                        const prompt = scriptData.scenes[idx].imagePrompt;
-                        const fallbackUrl = await tryLeonardoFallback(prompt, idx + 1);
-                        if (fallbackUrl) {
-                            imageUrls[idx] = fallbackUrl;
-                        }
-                    }
                 }
             }
 
@@ -901,6 +954,109 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
             }
 
             return { imageUrls };
+        });
+
+        // Step 4.5: Generate high-quality AI Thumbnail using Nano Banana 2 (Leonardo AI)
+        const thumbnailData = await step.run("generate-thumbnail", async () => {
+            console.log(`🖼️ Generating AI thumbnail via Nano Banana 2 for: "${seriesData.title}"`);
+            let prompt = (scriptData as any).thumbnailPrompt || `Cinematic masterpiece poster for a video titled: "${(scriptData as any).videoTitle || seriesData.title}". Epic composition, stunning lighting.`;
+            
+            // Strictly enforce no text
+            prompt += " -- CRITICAL: NO TEXT, NO WORDS, NO LETTERS, NO NUMBERS. PURE IMAGE ONLY.";
+            
+            try {
+                const thumbnailUrl = await generateNanoBananaImage(prompt, 1024, 1024);
+                console.log(`✅ AI Thumbnail (Nano Banana 2) ready: ${thumbnailUrl.substring(0, 60)}...`);
+                return { thumbnailUrl };
+            } catch (err: any) {
+                console.warn(`⚠️ AI Thumbnail generation failed, will fallback to video frame later: ${err?.message || err}`);
+                return { thumbnailUrl: "" };
+            }
+        });
+
+        // Update status: generating scene videos (image → video)
+        await step.run("update-status-videos", () => updateSeriesStatus(seriesId, "generating:videos"));
+
+        // Step 5.25: Convert scenes to video clips using Leonardo Seedance 1.0 Pro Fast
+        const sceneVideoData = await step.run("generate-scene-videos", async () => {
+            console.log(`🎬 Generating scene video clips via Leonardo Seedance for: "${seriesData.title}"`);
+            const totalScenes = scriptData.scenes.length;
+            const sceneVideoUrls: string[] = new Array(totalScenes).fill("");
+            const sceneThumbnailUrls: string[] = new Array(totalScenes).fill("");
+            const sceneVideoDurations: number[] = new Array(totalScenes).fill(10);
+
+            // Force-stop check
+            async function isVideoForceStoppedCheck(): Promise<boolean> {
+                const [current] = await db.select({ status: shortVideoSeries.status })
+                    .from(shortVideoSeries)
+                    .where(eq(shortVideoSeries.seriesId, seriesId));
+                if (!current || current.status === "completed" || current.status === "cancelled") {
+                    console.log(`🛑 Force stop detected during video generation! Aborting.`);
+                    return true;
+                }
+                return false;
+            }
+
+            for (let i = 0; i < totalScenes; i++) {
+                if (await isVideoForceStoppedCheck()) break;
+
+                const scene = scriptData.scenes[i];
+                const sceneImageUrl = imageData.imageUrls[i];
+                const videoPrompt = scene.videoPrompt || "Slow cinematic camera movement with dramatic lighting, gentle environmental motion";
+                const sceneDuration = scene.duration || 10;
+
+                // Skip if no image was generated and no skip marker
+                if (!sceneImageUrl || sceneImageUrl === "") {
+                    console.warn(`⚠️ Scene ${i + 1}: No image URL or skip marker, skipping video generation`);
+                    continue;
+                }
+
+                try {
+                    // Text-to-video for general/living_thing scenes (no image)
+                    if (sceneImageUrl === "SKIP_T2V" || sceneImageUrl === "SKIP_VEO") {
+                        console.log(`🎬 Scene ${i + 1}/${totalScenes}: Seedance txt2video | duration=${sceneDuration}s`);
+                        const result = await generateLeonardoTextVideo(
+                            videoPrompt || scene.imagePrompt,
+                            sceneDuration,
+                            seriesId,
+                            i
+                        );
+                        sceneVideoUrls[i] = result.videoUrl;
+                        sceneThumbnailUrls[i] = result.thumbnailUrl;
+                        sceneVideoDurations[i] = result.actualDurationSec;
+                        console.log(`✅ Scene ${i + 1} Seedance text-to-video ready: ${result.videoUrl.substring(0, 60)}...`);
+                    } else {
+                        // Image-to-video for monument scenes (Nano Banana 2 image → Seedance)
+                        console.log(`🎬 Scene ${i + 1}/${totalScenes}: Seedance img2video (monument) | duration=${sceneDuration}s`);
+                        const result = await generateLeonardoVideo(
+                            sceneImageUrl,
+                            videoPrompt,
+                            sceneDuration,
+                            seriesId,
+                            i
+                        );
+                        sceneVideoUrls[i] = result.videoUrl;
+                        sceneThumbnailUrls[i] = result.thumbnailUrl;
+                        sceneVideoDurations[i] = result.actualDurationSec;
+                        console.log(`✅ Scene ${i + 1} Seedance img-to-video ready: ${result.videoUrl.substring(0, 60)}...`);
+                    }
+                } catch (err: any) {
+                    console.error(`❌ Scene ${i + 1} Seedance video generation failed: ${err?.message || err}`);
+                    if (sceneImageUrl !== "SKIP_T2V" && sceneImageUrl !== "SKIP_VEO") {
+                        console.log(`⚠️ Scene ${i + 1} will fall back to static image`);
+                    }
+                }
+
+                // Rate-limit between scenes
+                if (i < totalScenes - 1) {
+                    const delay = 3000 + Math.random() * 2000;
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+
+            const videoSuccessCount = sceneVideoUrls.filter(u => u.length > 0).length;
+            console.log(`✅ Scene video generation complete: ${videoSuccessCount}/${totalScenes} videos generated via Seedance`);
+            return { sceneVideoUrls, sceneThumbnailUrls, sceneVideoDurations };
         });
 
         // Update status: selecting avatar clips
@@ -923,11 +1079,13 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 videoUrl: pair.intro.videoUrl,
                 audioUrl: introAudio.audioUrl,
                 durationSec: introAudio.durationSec,
+                videoDurationSec: pair.intro.videoDurationSec, // actual video file duration for playbackRate calc
             };
             const outroClip = {
                 videoUrl: pair.outro.videoUrl,
                 audioUrl: outroAudio.audioUrl,
                 durationSec: outroAudio.durationSec,
+                videoDurationSec: pair.outro.videoDurationSec, // actual video file duration for playbackRate calc
             };
 
             console.log(`✅ Intro clip ready: ${introClip.videoUrl} (${introClip.durationSec}s)`);
@@ -960,6 +1118,8 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
 
             const props = {
                 imageUrls: imageData.imageUrls,
+                sceneVideoUrls: sceneVideoData.sceneVideoUrls,
+                sceneVideoDurations: sceneVideoData.sceneVideoDurations,
                 introClip: avatarData.introClip,
                 outroClip: avatarData.outroClip,
                 audioUrl: voiceData.audioUrl,
@@ -988,7 +1148,10 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 audioDuration: voiceData.audioDuration,
                 captionData: captionData,
                 imageUrls: imageData.imageUrls,
+                sceneVideoUrls: sceneVideoData.sceneVideoUrls,
+                sceneThumbnailUrls: sceneVideoData.sceneThumbnailUrls,
                 avatarClipUrls, // Store intro/outro video URLs for reference
+                thumbnailUrl: thumbnailData.thumbnailUrl || null, // AI Generated Thumbnail
                 status: "processing",
             });
 

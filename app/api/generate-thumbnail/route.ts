@@ -1,6 +1,6 @@
 import { db } from "@/config/db";
 import { coursesTable } from "@/config/schema";
-import { generateRunwayImage } from "@/lib/runway";
+import { generateNanoBananaImage } from "@/lib/leonardo";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
@@ -184,11 +184,11 @@ export async function POST(req: NextRequest) {
         const prompt = buildThumbnailPrompt(courseName);
         console.log('📸 Thumbnail prompt:', prompt);
 
-        // Generate via RunwayML Gemini 2.5 Flash — 1344:768 landscape for course thumbnails
-        console.log(`📸 Calling RunwayML Gemini 2.5 Flash (1344:768, auto-rotating keys)...`);
+        // Generate via Leonardo Nano Banana 2 for thumbnails
+        console.log(`📸 Calling Leonardo Nano Banana 2 for thumbnail generation...`);
 
-        const signedUrl = await generateRunwayImage(prompt, "1344:768");
-        console.log(`✅ RunwayML returned URL: ${signedUrl.substring(0, 80)}...`);
+        const signedUrl = await generateNanoBananaImage(prompt, 1024, 1024);
+        console.log(`✅ Nano Banana 2 returned URL: ${signedUrl.substring(0, 80)}...`);
 
         // ═════════════════════════════════════════════════════════════════
         // DOWNLOAD & PERSIST LOCALLY
@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
             thumbnailUrl: localPath,
             metadata: {
                 generatedAt: new Date().toISOString(),
-                engine: 'runway-gemini-2.5-flash',
+                engine: 'leonardo-nano-banana-2',
                 courseId,
                 prompt: prompt.substring(0, 200)
             }

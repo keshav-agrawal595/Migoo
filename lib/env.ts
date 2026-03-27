@@ -34,13 +34,16 @@ const envSchema = z.object({
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   SARVAM_API_KEY: z.string().min(1).optional(),
   GEMINI_API_KEY: z.string().min(1).optional(),
+  GEMINI_API_KEY_IMAGE: z.string().min(1).optional(),
 
   // ── Storage ───────────────────────────────────────────────────
   BLOB_READ_WRITE_TOKEN: z.string().min(1).optional(),
 
-  // ── Image Generation ──────────────────────────────────────────
-  RUNWAY_API_KEY: z.string().min(1).optional(),
+  // ── Image Generation (Nano Banana uses GEMINI_API_KEY above) ─
   LEONARDO_API_KEY: z.string().min(1).optional(),
+
+  // ── Video Generation (Leonardo Seedance) ───────────────────────
+  // Leonardo keys are already covered by LEONARDO_API_KEY above
 
   // ── Application ───────────────────────────────────────────────
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
