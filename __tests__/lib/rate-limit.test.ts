@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock next/server since it's not available outside Next.js runtime
+vi.mock('next/server', () => ({
+  NextRequest: class MockNextRequest {
+    nextUrl = { pathname: '/', searchParams: new URLSearchParams() };
+    headers = new Map();
+    method = 'GET';
+  },
+}));
+
 import { rateLimit, resetRateLimitStore } from '../../lib/rate-limit';
 
 describe('rateLimit', () => {

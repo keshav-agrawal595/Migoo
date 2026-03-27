@@ -24,7 +24,6 @@
 .DS_Store
 *.pem
 
-git rm -r --cached public/renders/*.mp4
 # generated videos - GitHub limits files to 100MB
 /public/renders/*.mp4
 

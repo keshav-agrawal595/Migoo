@@ -2,6 +2,8 @@ import { db } from "@/config/db";
 import { courseImages } from "@/config/schema";
 import { putWithRotation } from "@/lib/blob";
 import { generateRunwayImage } from "@/lib/runway";
+import { apiError, apiSuccess } from "@/lib/api-helpers";
+import { currentUser } from "@clerk/nextjs/server";
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -60,6 +62,12 @@ const IMAGES_PER_CHAPTER = 1;
 
 export async function POST(req: NextRequest) {
     try {
+        // Auth guard
+        const user = await currentUser();
+        if (!user?.primaryEmailAddress?.emailAddress) {
+            return apiError('Authentication required', 401, 'UNAUTHORIZED');
+        }
+
         const { courseName, courseId, chapters } = await req.json();
 
         console.log('\n' + '═'.repeat(80));
@@ -72,10 +80,7 @@ export async function POST(req: NextRequest) {
         console.log('═'.repeat(80) + '\n');
 
         if (!courseName || !courseId || !chapters) {
-            return NextResponse.json(
-                { error: 'courseName, courseId, and chapters are required' },
-                { status: 400 }
-            );
+            return apiError('courseName, courseId, and chapters are required', 400, 'VALIDATION_ERROR');
         }
 
         // ═════════════════════════════════════════════════════════════════
@@ -88,9 +93,8 @@ export async function POST(req: NextRequest) {
 
         if (existingImages.length > 0) {
             console.log(`✅ Images already exist for course ${courseId} (${existingImages.length} images) — SKIPPING`);
-            return NextResponse.json({
-                success: true,
-                data: existingImages,
+            return apiSuccess({
+                images: existingImages,
                 skipped: true,
                 message: `Images already generated (${existingImages.length} images)`
             });
@@ -169,9 +173,8 @@ export async function POST(req: NextRequest) {
         console.log(`📊 ${generatedImages.length} unique images across ${chapters.length} chapters`);
         console.log('═'.repeat(80) + '\n');
 
-        return NextResponse.json({
-            success: true,
-            data: generatedImages,
+        return apiSuccess({
+            images: generatedImages,
             metadata: {
                 generatedAt: new Date().toISOString(),
                 engine: 'nano-banana-gemini-2.5-flash-image',
@@ -191,13 +194,11 @@ export async function POST(req: NextRequest) {
         console.error('Stack:', error.stack);
         console.error('═'.repeat(80) + '\n');
 
-        return NextResponse.json(
-            {
-                success: false,
-                error: error.message || 'Failed to generate images',
-                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            },
-            { status: 500 }
+        return apiError(
+            error.message || 'Failed to generate images',
+            500,
+            'GENERATION_ERROR',
+            error.stack
         );
     }
 }

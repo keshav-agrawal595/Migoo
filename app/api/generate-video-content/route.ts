@@ -21,15 +21,16 @@ import { apiError, apiSuccess } from "@/lib/api-helpers";
 import { validateInput, generateVideoContentSchema } from "@/lib/validations";
 import { putWithRotation } from "@/lib/blob";
 import { deleteSlidesContent, loadSlidesContent, saveSlidesContent } from "@/lib/content-cache";
+import { currentUser } from "@clerk/nextjs/server";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 🧪 TESTING MODE CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
-const TESTING_MODE = true;  // ⚠️ SET TO false TO GENERATE ALL CHAPTERS
-const TEST_CHAPTER_INDEX = 9;  // Generate only this chapter (0 = first chapter)
-const USE_CONTENT_CACHE = true;  // ⚠️ SET TO false TO FORCE LLM REGENERATION
+const TESTING_MODE = false;  // Set to true during development to generate a single chapter
+const TEST_CHAPTER_INDEX = 0;  // Only used when TESTING_MODE = true
+const USE_CONTENT_CACHE = true;  // Set to false to force LLM regeneration
 
 console.log('🧪 TESTING MODE:', TESTING_MODE ? 'ENABLED (Single Chapter Only)' : 'DISABLED (All Chapters)');
 if (TESTING_MODE) {
@@ -399,6 +400,12 @@ async function generateCaptions(audioUrl: string, languageCode: string = "en-IN"
 
 export async function POST(req: NextRequest) {
     try {
+        // Auth guard — require authenticated user
+        const user = await currentUser();
+        if (!user?.primaryEmailAddress?.emailAddress) {
+            return apiError('Authentication required', 401, 'UNAUTHORIZED');
+        }
+
         // Validate request body with Zod schema
         const body = await req.json();
         const validation = validateInput(generateVideoContentSchema, body);

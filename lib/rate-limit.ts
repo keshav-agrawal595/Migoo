@@ -17,7 +17,7 @@
  * ```
  */
 
-import { NextRequest } from "next/server";
+import type { NextRequest } from "next/server";
 
 /** Configuration options for the rate limiter */
 export interface RateLimitOptions {

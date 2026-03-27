@@ -1,6 +1,8 @@
 import { db } from "@/config/db";
 import { coursesTable } from "@/config/schema";
 import { generateNanoBananaImage } from "@/lib/leonardo";
+import { apiError, apiSuccess } from "@/lib/api-helpers";
+import { currentUser } from "@clerk/nextjs/server";
 import { eq } from "drizzle-orm";
 import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
@@ -115,6 +117,12 @@ async function downloadAndSaveThumbnail(imageUrl: string, courseId: string): Pro
 
 export async function POST(req: NextRequest) {
     try {
+        // Auth guard
+        const user = await currentUser();
+        if (!user?.primaryEmailAddress?.emailAddress) {
+            return apiError('Authentication required', 401, 'UNAUTHORIZED');
+        }
+
         const { courseId, courseName } = await req.json();
 
         console.log('\n' + '═'.repeat(80));
@@ -125,10 +133,7 @@ export async function POST(req: NextRequest) {
         console.log('═'.repeat(80) + '\n');
 
         if (!courseId || !courseName) {
-            return NextResponse.json(
-                { error: 'courseId and courseName are required' },
-                { status: 400 }
-            );
+            return apiError('courseId and courseName are required', 400, 'VALIDATION_ERROR');
         }
 
         // ═════════════════════════════════════════════════════════════════
@@ -147,8 +152,7 @@ export async function POST(req: NextRequest) {
                 const localFile = path.join(process.cwd(), "public", existingUrl);
                 if (fs.existsSync(localFile)) {
                     console.log(`✅ Local thumbnail already exists for course ${courseId} — SKIPPING`);
-                    return NextResponse.json({
-                        success: true,
+                    return apiSuccess({
                         thumbnailUrl: existingUrl,
                         skipped: true,
                         message: 'Thumbnail already generated (local file)'
@@ -164,8 +168,7 @@ export async function POST(req: NextRequest) {
                         .set({ courseThumbnail: localPath })
                         .where(eq(coursesTable.courseId, courseId));
                     console.log(`✅ Migrated S3 URL to local path: ${localPath}`);
-                    return NextResponse.json({
-                        success: true,
+                    return apiSuccess({
                         thumbnailUrl: localPath,
                         skipped: false,
                         message: 'Migrated S3 URL to local file'
@@ -206,8 +209,7 @@ export async function POST(req: NextRequest) {
         console.log('🎉 THUMBNAIL GENERATION COMPLETE');
         console.log('═'.repeat(80) + '\n');
 
-        return NextResponse.json({
-            success: true,
+        return apiSuccess({
             thumbnailUrl: localPath,
             metadata: {
                 generatedAt: new Date().toISOString(),
@@ -225,13 +227,11 @@ export async function POST(req: NextRequest) {
         console.error('Stack:', error.stack);
         console.error('═'.repeat(80) + '\n');
 
-        return NextResponse.json(
-            {
-                success: false,
-                error: error.message || 'Failed to generate thumbnail',
-                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            },
-            { status: 500 }
+        return apiError(
+            error.message || 'Failed to generate thumbnail',
+            500,
+            'GENERATION_ERROR',
+            error.stack
         );
     }
 }

@@ -74,6 +74,27 @@ export default clerkMiddleware(async (auth, req) => {
         response.headers.set('X-RateLimit-Remaining', String(remaining));
     }
 
+    // ── CSRF protection for API mutations ────────────────────────
+    const method = req.method;
+    if (req.nextUrl.pathname.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        const origin = req.headers.get('origin');
+        const host = req.headers.get('host');
+
+        // Allow requests from the same origin, or from Inngest/webhooks
+        const isInternalRoute = req.nextUrl.pathname.startsWith('/api/inngest') ||
+                                req.nextUrl.pathname.startsWith('/api/webhooks');
+
+        if (!isInternalRoute && origin && host) {
+            const originHost = new URL(origin).host;
+            if (originHost !== host) {
+                return NextResponse.json(
+                    { error: 'CSRF validation failed: origin mismatch' },
+                    { status: 403 }
+                );
+            }
+        }
+    }
+
     // ── Auth protection for non-public routes ────────────────────
     if (!isPublicRoute(req)) {
         await auth.protect()
