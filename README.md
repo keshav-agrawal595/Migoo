@@ -177,12 +177,12 @@ Create a `.env` file in the project root with the following variables:
 | `DATABASE_URL` | ✅ | Neon PostgreSQL connection string |
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | ✅ | Clerk frontend publishable key |
 | `CLERK_SECRET_KEY` | ✅ | Clerk backend secret key |
-| `OPENROUTER_API_KEY` | ⬜ | OpenRouter API key for LLM access |
+| `OPENROUTER_API_KEY` | ✅ | OpenRouter API key for LLM access |
 | `GEMINI_API_KEY` | ✅ | Google Gemini API key |
-| `SARVAM_API_KEY` | ⬜ | Sarvam AI key for TTS/STT |
-| `BLOB_READ_WRITE_TOKEN` | ⬜ | Vercel Blob storage token |
-| `LEONARDO_API_KEY` | ⬜ | Leonardo AI image generation |
-| `INNGEST_SIGNING_KEY` | ⬜ | Inngest webhook signing key |
+| `SARVAM_API_KEY` | ✅ | Sarvam AI key for TTS/STT |
+| `BLOB_READ_WRITE_TOKEN` | ✅ | Vercel Blob storage token |
+| `LEONARDO_API_KEY` | ✅ | Leonardo AI image generation |
+| `INNGEST_SIGNING_KEY` | ✅ | Inngest webhook signing key |
 
 > **Note**: Only `DATABASE_URL`, `CLERK_*` keys, and `GEMINI_API_KEY` are strictly required for the core course generation flow. Other keys enable additional features (TTS, image generation, short videos).
 
