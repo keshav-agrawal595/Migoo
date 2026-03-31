@@ -87,58 +87,18 @@ const AvatarClipScene: React.FC<{
 }> = ({ videoUrl, audioUrl, durationInFrames, videoDurationSec }) => {
   const { fps } = useVideoConfig();
 
-  // Remote URLs (https://) used as-is; local paths go through staticFile()
-  const resolvedVideoUrl = useMemo(() => {
-    // Forcefully strip any full HTTP absolute paths that point to localhost
-    // and extract the correct relative file path.
-    let cleanUrl = videoUrl;
-
-    if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
-      try {
-        const urlObj = new URL(cleanUrl);
-        cleanUrl = urlObj.pathname;
-      } catch (e) {
-        // Fallback if not a valid URL
-      }
-    }
-
-    // Completely strip any "public/" prefix
-    if (cleanUrl.startsWith('/public/')) cleanUrl = cleanUrl.replace('/public/', '');
-    if (cleanUrl.startsWith('public/')) cleanUrl = cleanUrl.replace('public/', '');
-
-    // Now if it's an avatar file, it will cleanly resolve
-    if (cleanUrl.includes('avatars/avatar')) {
-      const match = cleanUrl.match(/avatars\/avatar[0-9]+-(intro|outro)\.mp4/);
-      if (match) return staticFile(match[0]);
-    }
-
-    // If it's still a remote HTTP url (like S3/Cloudfront), use it directly
-    if (cleanUrl.startsWith('http')) {
-      return cleanUrl;
-    }
-
-    // Otherwise, ensure it doesn't have a leading slash for staticFile
-    const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
-    return staticFile(finalUrl);
-  }, [videoUrl]);
-
-  const resolvedAudioUrl = useMemo(() => {
-    if (!audioUrl) return "";
-    if (audioUrl.startsWith('http')) {
-      return audioUrl;
-    }
-    return staticFile(audioUrl);
-  }, [audioUrl]);
+  const resolvedVideoUrl = useMemo(() => resolveLocalUrl(videoUrl) || "", [videoUrl]);
+  const resolvedAudioUrl = useMemo(() => resolveLocalUrl(audioUrl) || "", [audioUrl]);
 
   // Stretch/compress the avatar video to fill the entire sequence duration.
   // Without this, Remotion crashes with "No frame found at position" when
   // the TTS audio (and thus the sequence) is longer than the video file.
   const pbRate = useMemo(() => {
-    if (!videoDurationSec || !durationInFrames) return 1;
+    if (!videoDurationSec || !durationInFrames) return 0.94;
     const targetDurationSec = durationInFrames / fps;
-    // ratio > 1 means speed up (video longer than sequence)
-    // ratio < 1 means slow down (video shorter than sequence)
-    const rate = (videoDurationSec / targetDurationSec) * 0.99; // 0.99x ensures we NEVER seek past the last frame
+    // Always apply 0.94× safety buffer to prevent "No frame found" crashes
+    // at the last GOP boundary of the avatar video file.
+    const rate = (videoDurationSec / targetDurationSec) * 0.94;
     // Clamp to safe range (0.25x to 4x)
     return Math.max(0.25, Math.min(4, rate));
   }, [videoDurationSec, durationInFrames, fps]);
@@ -200,42 +160,56 @@ const VideoScene: React.FC<{
 const VideoClipScene: React.FC<{
   videoUrl: string;
   duration: number; // in frames (target sequence duration)
-  sourceDuration?: number; // in seconds (actual AI video duration)
+  sourceDuration?: number; // in seconds (actual AI video duration, e.g. 5 or 10 for Kling)
 }> = ({ videoUrl, duration, sourceDuration }) => {
   const { fps } = useVideoConfig();
 
-  // Stable useMemo prevents jittering on every frame.
-  const resolvedVideoUrl = useMemo(() => {
-    let cleanUrl = videoUrl;
+  const resolvedVideoUrl = useMemo(() => resolveLocalUrl(videoUrl) || "", [videoUrl]);
 
-    if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
-      try {
-        const urlObj = new URL(cleanUrl);
-        cleanUrl = urlObj.pathname;
-      } catch (e) {}
-    }
-
-    if (cleanUrl.startsWith('/public/')) cleanUrl = cleanUrl.replace('/public/', '');
-    if (cleanUrl.startsWith('public/')) cleanUrl = cleanUrl.replace('public/', '');
-
-    if (cleanUrl.startsWith('http')) {
-      return cleanUrl;
-    }
-    const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
-    return staticFile(finalUrl);
-  }, [videoUrl]);
-
-  // Calculate playbackRate: sourceDuration (sec) / targetDuration (sec)
+  // ── Crash-proof playback rate (designed for Kling 2.5 Turbo) ────────────
+  //
+  // sourceDuration = actual duration of the uploaded MP4 file (seconds):
+  //   • If server-side FFmpeg stretch SUCCEEDED → equals targetDurationSec (≈ 15s)
+  //     → rawRate ≈ 1.0, video plays at normal speed, no crash possible.
+  //   • If server-side FFmpeg stretch FAILED    → equals Kling clamp (5 or 10s)
+  //     → rawRate < 1 (e.g. 5/15 = 0.33). We MUST slow the video down to that
+  //       exact rate so Remotion never requests a frame past the video's end.
+  //       Using pbRate=1 in this case IS the cause of "No frame found" crashes.
+  //
+  // Why 0.98 buffer?
+  //   At the last frame of a 450-frame (15s) sequence, Remotion requests
+  //   video time = 449 * pbRate / fps. A 0.98 buffer keeps this just
+  //   under the file's actual last frame, preventing boundary crashes.
+  //
+  // Minimum 0.15x:
+  //   Protects against extreme slow-motion on very short clips (< 2s).
+  //
   const targetDurationSec = duration / fps;
+
   const pbRate = useMemo(() => {
-    if (!sourceDuration) return 1; // Fallback to normal speed
-    // 0.99x ensures we NEVER seek past the last frame of the source video
-    return (sourceDuration / targetDurationSec) * 0.99;
+    // Fallback: If Inngest state is missing sceneVideoDurations from an older cached run,
+    // assume the worst-case Kling duration (5s) to guarantee no hard crashes.
+    const actualLength = sourceDuration && sourceDuration > 0 ? sourceDuration : 5;
+
+    const rawRate = actualLength / targetDurationSec;
+
+    // ── CRITICAL: Always apply a 0.94× safety buffer regardless of direction ──
+    //
+    // H.264/H.265 videos don't end exactly at the container-declared duration.
+    // GOP boundaries mean the last decodable frame is typically 1–2 frames
+    // BEFORE the declared end time. Without this buffer, Remotion requests
+    // the exact last declared frame timestamp → compositor returns
+    // "No frame found at position XXXXXX" → render crashes.
+    //
+    // 0.94 = 6% safety margin ≈ 1–2 frame buffer at 30fps.
+    // This means we use up to 94% of the source video's declared duration.
+    //
+    // Clamped between 0.15× (min slow-motion) and 4× (max fast-forward).
+    return Math.max(0.15, Math.min(4.0, rawRate * 0.94));
   }, [sourceDuration, targetDurationSec]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      {/* OffthreadVideo prevents jittering when stretching video with playbackRate */}
       <OffthreadVideo
         src={resolvedVideoUrl}
         style={{
@@ -260,8 +234,10 @@ const Captions: React.FC<{
 }> = ({ segments, styleId = 'bold-pop', language = 'en-IN' }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  // Sequence automatically resets the frame to 0 at the start of the content section
-  const SYNC_OFFSET = 0.30; // seconds to offset captions (positive = earlier)
+  // Sequence resets frame to 0 at contentStart. Audio also starts at contentStart with no delay.
+  // SYNC_OFFSET = 0: captions are perfectly synced with audio.
+  // (Previously 1.30s to compensate for CAPTION_DELAY_FRAMES=30, which has since been set to 0)
+  const SYNC_OFFSET = 0.0;
   const currentTime = (frame / fps) + SYNC_OFFSET;
 
   const style = useMemo(() =>
@@ -343,6 +319,45 @@ const Captions: React.FC<{
   );
 };
 
+export function resolveLocalUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  let cleanUrl = url;
+
+  // 1. Force stripping of NEXT_PUBLIC_APP_URL, localhosts, and 127.0.0.1
+  if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
+    try {
+      cleanUrl = new URL(cleanUrl).pathname;
+    } catch (e) {}
+  }
+  
+  // Also strip any custom vercel URL domains if they exist but we didn't catch it
+  if (cleanUrl.startsWith('http') && cleanUrl.includes('/public/avatars/')) {
+       cleanUrl = cleanUrl.substring(cleanUrl.indexOf('/public/avatars/'));
+  }
+  if (cleanUrl.startsWith('http') && cleanUrl.includes('/avatars/')) {
+       cleanUrl = cleanUrl.substring(cleanUrl.indexOf('/avatars/'));
+  }
+
+  // 2. Aggressively Strip any exact sequence of '/public/' or 'public/' from the start of the path
+  while (cleanUrl.startsWith('/public/') || cleanUrl.startsWith('public/')) {
+      cleanUrl = cleanUrl.replace(/^\/?public\//, '');
+  }
+
+  // 3. If it is an avatar, guarantee it maps to staticFile
+  if (cleanUrl.includes('avatars/avatar')) {
+      // It is a local file.
+      const match = cleanUrl.match(/avatars\/avatar[0-9]+-(intro|outro)\.(mp4|webm)/);
+      if (match) return staticFile(match[0]);
+  }
+
+  // 4. If it is STILL http or a direct local file uri, keep it as is.
+  if (cleanUrl.startsWith('http') || cleanUrl.startsWith('file:///')) return cleanUrl;
+
+  // 5. Otherwise map to staticFile (local downloads like tmp/assets)
+  const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
+  return staticFile(finalUrl);
+}
+
 // ─── Main Composition ─────────────────────────────────────────────────────────
 export const MainComposition: React.FC<CompositionProps> = ({
   imageUrls,
@@ -373,10 +388,13 @@ export const MainComposition: React.FC<CompositionProps> = ({
   // Outro starts after content
   const outroStart = contentStart + contentFrames;
 
+  const resolvedMusicUrl = useMemo(() => resolveLocalUrl(musicUrl), [musicUrl]);
+  const resolvedAudioUrl = useMemo(() => resolveLocalUrl(audioUrl), [audioUrl]);
+
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
       {/* ── Background Music: runs throughout entire video ── */}
-      {musicUrl && <Audio src={musicUrl} volume={0.12} loop crossOrigin="anonymous" />}
+      {resolvedMusicUrl && <Audio src={resolvedMusicUrl} volume={0.12} loop crossOrigin="anonymous" />}
 
       {/* ══════════════════════════════════════════════════
           INTRO SECTION — HeyGen avatar clip (English)
@@ -399,9 +417,9 @@ export const MainComposition: React.FC<CompositionProps> = ({
       ══════════════════════════════════════════════════ */}
 
       {/* Main narration audio: starts at contentStart, plays for audioDuration */}
-      {audioUrl && (
+      {resolvedAudioUrl && (
         <Sequence from={contentStart} durationInFrames={contentFrames}>
-          <Audio src={audioUrl} crossOrigin="anonymous" />
+          <Audio src={resolvedAudioUrl} crossOrigin="anonymous" />
         </Sequence>
       )}
 

@@ -157,9 +157,24 @@ async function submitLeonardoJob(
  * Poll for a Leonardo generation result until done.
  * Uses the SAME key that submitted the job.
  */
-async function pollLeonardoJob(generationId: string, apiKey: string, maxAttempts: number = 60): Promise<string> {
+async function pollLeonardoJob(
+    generationId: string,
+    apiKey: string,
+    maxAttempts: number = 150,  // 150 × 2s = 5 minutes (was 60 = 2 min, too short for Nano Banana 2)
+    cancelSignal?: { cancelled: boolean }  // optional external cancellation token
+): Promise<string> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // ── Check cancellation before each sleep ──────────────────────────────
+        if (cancelSignal?.cancelled) {
+            throw new Error(`Leonardo job ${generationId} cancelled by force stop.`);
+        }
+
         await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // ── Check cancellation again after sleep (catches mid-sleep stops) ───
+        if (cancelSignal?.cancelled) {
+            throw new Error(`Leonardo job ${generationId} cancelled by force stop.`);
+        }
 
         try {
             const statusResponse = await fetch(
@@ -187,8 +202,9 @@ async function pollLeonardoJob(generationId: string, apiKey: string, maxAttempts
             const generation = statusResult?.generations_by_pk;
             const status = generation?.status;
 
-            if (attempt % 3 === 0) {
-                console.log(`  Poll #${attempt + 1}: status = ${status}`);
+            if (attempt % 5 === 0) {
+                const elapsedSec = (attempt * 2);
+                console.log(`  Poll #${attempt + 1}: status = ${status} (~${elapsedSec}s elapsed)`);
             }
 
             if (status === "COMPLETE") {
@@ -208,6 +224,7 @@ async function pollLeonardoJob(generationId: string, apiKey: string, maxAttempts
             }
 
         } catch (error: any) {
+            if (error.message.includes("cancelled by force stop")) throw error; // Don't swallow cancellation
             if (error.message.includes("429")) {
                 await new Promise(resolve => setTimeout(resolve, 5000));
                 continue;
@@ -227,10 +244,11 @@ export async function generateLeonardoImage(
     prompt: string,
     width: number = 768,
     height: number = 432,
-    styleUUID?: string
+    styleUUID?: string,
+    cancelSignal?: { cancelled: boolean }
 ): Promise<string> {
     const { generationId, apiKey } = await submitLeonardoJob(prompt, width, height, styleUUID);
-    const imageUrl = await pollLeonardoJob(generationId, apiKey);
+    const imageUrl = await pollLeonardoJob(generationId, apiKey, 150, cancelSignal);
     return imageUrl;
 }
 
@@ -436,35 +454,45 @@ async function submitLeonardoJobWithModel(
     }
     throw new Error(`All keys failed: ${errors.join(", ")}`);
 }
+// ── Nano Banana (gemini-2.5-flash-image) — 9:16 portrait dimensions ──────────
+// Valid pair per Leonardo docs: 768 × 1344
+const NB_9x16_WIDTH  = 768;
+const NB_9x16_HEIGHT = 1344;
+
 /**
- * Generate an image using Nano Banana 2 (Google Gemini 3-based).
- * Best realistic quality. Uses v2 API with key rotation.
+ * Generate an image using Nano Banana (gemini-2.5-flash-image).
+ * Fast, high quality — 30-60 seconds per image.
+ * Uses v2 API with key rotation.
  *
- * Defaults:
- *  - 9:16 portrait (768×1376) — ideal for short video scenes
- *  - Dynamic style for sharp, realistic output
- *
- * For course thumbnails use 1024×1024 or 1200×896 (pass explicitly).
+ * Default: 768×1344 (valid 9:16 portrait pair per Leonardo docs)
+ * For thumbnails: pass 1024×1024 explicitly.
  */
 export async function generateNanoBananaImage(
     prompt: string,
-    width: number = 768,
-    height: number = 1344,
-    styleUUID?: string
+    width: number = NB_9x16_WIDTH,
+    height: number = NB_9x16_HEIGHT,
+    styleUUID?: string,
+    cancelSignal?: { cancelled: boolean }
 ): Promise<string> {
-    // Enhance the prompt for best realistic output
     const enhancedPrompt = enhanceForRealism(prompt);
+
+    console.log(`🍌 Generating image with Nano Banana (gemini-2.5-flash-image, ${width}×${height})...`);
+
     const { generationId, apiKey } = await submitLeonardoJobV2(
-        "nano-banana-2",
+        "gemini-2.5-flash-image",
         enhancedPrompt,
         width,
         height,
         styleUUID
     );
-    // Use the reliable v1 polling (confirmed working for v2 jobs)
-    const imageUrl = await pollLeonardoJob(generationId, apiKey);
+
+    // Poll up to 5 minutes (150 × 2s)
+    const imageUrl = await pollLeonardoJob(generationId, apiKey, 150, cancelSignal);
+    console.log(`✅ Nano Banana image ready!`);
     return imageUrl;
 }
+
+
 
 
 

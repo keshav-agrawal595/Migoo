@@ -18,7 +18,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --legacy-peer-deps
 
       - name: Write props to file
         run: |
@@ -33,9 +33,12 @@ jobs:
           npx remotion render MainVideo out/video.mp4 \
             --props="./tmp/props.json"
 
-      - name: Upload to Vercel Blob & Notify Webhook
+      - name: Upload to Appwrite Storage & Notify Webhook
         env:
-          BLOB_READ_WRITE_TOKEN: ${{ github.event.client_payload.blobToken || secrets.BLOB_READ_WRITE_TOKEN }}
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_BUCKET_ID: ${{ secrets.APPWRITE_BUCKET_ID }}
           VIDEO_ID: ${{ github.event.client_payload.videoId }}
           WEBHOOK_URL: ${{ github.event.client_payload.webhookUrl }}
         run: node scripts/upload-render.js

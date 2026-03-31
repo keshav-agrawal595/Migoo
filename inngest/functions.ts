@@ -5,7 +5,7 @@ import { putWithRotation } from "@/lib/blob";
 import { getMusicUrl } from "@/lib/music-urls";
 import { ContentModerationError } from "@/lib/runway";
 import { generateNanoBananaImage } from "@/lib/leonardo";
-import { generateLeonardoVideo, generateLeonardoTextVideo } from "@/lib/leonardo-video";
+import { generateLeonardoVideo, generateLeonardoTextVideo, generateKlingScenesParallel } from "@/lib/leonardo-video";
 import { triggerRender } from "@/lib/video-render";
 import { and, eq, or } from "drizzle-orm";
 import { inngest } from "./client";
@@ -416,18 +416,18 @@ SCRIPT REQUIREMENTS:
 2. STRUCTURE: You MUST use explicit keys ("scene1", "scene2"..."scene6") instead of an array.
 3. LANGUAGE & NATIVE FLOW: Write ENTIRELY in ${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}. You MUST use natural, native-sounding phrasing. Do NOT just translate English idioms literally. The narration MUST flow seamlessly and logically from one scene to the next.
 4. NARRATION STYLE: Write a seamless, highly engaging story or compelling argument. Do NOT use meta-commentary, structural announcements, or "content framing" (e.g., NEVER say "Scene 1", "Here is a story about...", "Welcome to the video"). Start directly with the hook. The points MUST be highly interesting and directly address the user's title. Each scene must have 40-50 words (3-4 descriptive sentences).
-5. IMAGE PROMPTS (CRITICAL — DETAILED): For scenes categorized as 'monument', write EXTREMELY detailed, masterpiece-level image generation prompts (30-50 words). Include: specific subject, exact architectural details, lighting direction and quality (golden hour, dramatic side-lighting, soft diffused), camera angle (low angle, eye level, aerial), atmosphere (misty, clear, hazy), color palette, texture details, and photographic style (DSLR, 85mm lens, f/2.8). These prompts will be used by Leonardo AI Nano Banana 2 model for photorealistic image generation.
-6. VIDEO PROMPTS (CRITICAL — DETAILED): For EVERY scene, write an extremely detailed "videoPrompt" (30-50 words) describing a cinematic video clip. Include: specific camera movements (slow dolly-in, sweeping crane shot, tracking shot left-to-right, push-in zoom), environmental motion (swaying trees, flowing water, drifting clouds, flickering fire, dust particles), lighting transitions (sunrise to golden hour, shadow play), and atmospheric effects (lens flare, volumetric fog, rain, snow). These prompts are used by Leonardo Seedance 1.0 Pro Fast for video generation — the more detailed, the better the output.
-7. THUMBNAIL PROMPT (CRITICAL): Generate a highly specific, stunning, and click-worthy "thumbnailPrompt" (30-40 words) for the video's cover image. This prompt will be used by Nano Banana 2 (Leonardo AI) to create a cinematic, masterpiece-level thumbnail. ⚠️ IMPORTANT: The thumbnail MUST NOT contain any text, words, letters, or numbers. Focus ONLY on visual storytelling. CRITICAL: NO TEXT, NO WORDS, NO LETTERS.
-8. SCENE CATEGORIZATION (CRITICAL): You MUST accurately categorize each scene's content:
-   - Set "sceneCategory" to 'monument' if the scene features a REAL monument, real architecture, real historical site, real person who exists/existed in reality, real landmark, or anything that exists in the real world and would benefit from photorealistic image generation.
-   - Set "sceneCategory" to 'living_thing' if the scene features fictional/generic people, animals, or any living creatures (not real historical figures).
-   - Set "sceneCategory" to 'general' for abstract concepts, graphics, text overlays, or anything else.
-   NOTE: Scenes categorized as 'monument' will get a Nano Banana 2 photorealistic image first, then converted to video. All other scenes will get direct text-to-video generation. So categorize wisely for best visual results!
-9. TTS FORMATTING: Do NOT use ellipses (...), em-dashes (—), en-dashes (–), colons (:), semicolons (;), ALL CAPS, parenthetical asides, or excessive punctuation in the narration. Do NOT use elongated/stretched words like "soooo", "amaziiing", "reaaally" etc. Write clean, short, grammatically correct sentences using only periods, commas, question marks, and exclamation marks. Use the target language (${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}) with natural pacing. This is CRITICAL to prevent the Text-To-Speech engine from unnaturally stretching words or pausing too long.
-
-JSON SCHEMA:
-Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exactly this wrapped in <json> tags:
+419. 5. IMAGE PROMPTS (CRITICAL — DETAILED): For scenes categorized as 'real_entity', write EXTREMELY detailed, masterpiece-level image generation prompts (30-50 words). Include: specific subject, exact architectural/facial details, lighting direction and quality (golden hour, dramatic side-lighting, soft diffused), camera angle (low angle, eye level, aerial), atmosphere (misty, clear, hazy), color palette, texture details, and photographic style (DSLR, 85mm lens, f/2.8). These prompts will be used by Leonardo AI Nano Banana 2 model for photorealistic image generation.
+420. 6. VIDEO PROMPTS (CRITICAL — DETAILED): For EVERY scene, write an extremely detailed "videoPrompt" (30-50 words) describing a cinematic video clip. Include: specific camera movements (slow dolly-in, sweeping crane shot, tracking shot...
+421. 7. THUMBNAIL PROMPT (CRITICAL): Generate a highly specific, stunning, and click-worthy "thumbnailPrompt" (30-40 words) for the video's cover image. This prompt will be used by Nano Banana 2 (Leonardo AI) to create a cinematic, masterpiece-level thumbnail. ⚠️ IMPORTANT: The thumbnail MUST NOT contain any text, words, letters, or numbers. Focus ONLY on visual storytelling. CRITICAL: NO TEXT, NO WORDS, NO LETTERS.
+422. 8. SCENE CATEGORIZATION (CRITICAL): You MUST accurately categorize each scene's content into one of these EXACT string values:
+423.    - "real_entity": if the scene features a REAL person (historical figures, athletes, politicians), real monument, real artifact, real architecture, real historical site, real landmark, or real personal identity from any field.
+424.    - "living_thing": if the scene features fictional/generic people, generic characters, animals, or any living creatures (NOT real historical figures).
+425.    - "general": for abstract concepts, graphics, text overlays, or anything else.
+426.    NOTE: Scenes categorized as 'real_entity' will get a Nano Banana 2 photorealistic image first, then converted to video via Kling 2.5 Turbo. All other scenes will get direct text-to-video generation via Kling. So categorize wisely for best visual results!
+427. 9. TTS FORMATTING: Do NOT use ellipses (...), em-dashes (—), en-dashes (–), colons (:), semicolons (;), ALL CAPS, parenthetical asides, or excessive punctuation in the narration. Do NOT use elongated/stretched words like "soooo", "amaziiing", "reaaally" etc. Write clean, short, grammatically correct sentences using only periods, commas, question marks, and exclamation marks. Use the target language (${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}) with natural pacing. This is CRITICAL to prevent the Text-To-Speech engine from unnaturally stretching words or pausing too long.
+428. 
+429. JSON SCHEMA:
+430. Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exactly this wrapped in <json> tags:
 
 <json>
 {
@@ -438,8 +438,8 @@ Do NOT use a "scenes" array. Use exact keys (scene1, scene2, etc.). Return exact
   "scene1": {
     "narration": "Gripping segment with NO intro framing (40-50 words)...",
     "imagePrompt": "Ultra-detailed visual description for Nano Banana 2 image generation (30-50 words, cinematic, photorealistic)...",
-    "videoPrompt": "Extremely detailed animation/video description for Seedance 1.0 Pro Fast (30-50 words, camera movements, environmental effects, lighting)...",
-    "sceneCategory": "monument",
+    "videoPrompt": "Extremely detailed animation/video description for Kling 2.5 Turbo (30-50 words, camera movements, environmental effects, lighting)...",
+    "sceneCategory": "real_entity",
     "duration": 15,
     "wordCount": 45
   },
@@ -771,8 +771,8 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                     console.warn('⚠️ Cleanup failed:', e);
                 }
 
-                // Group words into caption segments (~4 words each)
-                const WORDS_PER_SEGMENT = 4;
+                // Group words into caption segments (~6 words each for comfortable reading speed)
+                const WORDS_PER_SEGMENT = 6;
                 const segments: Array<{
                     text: string;
                     start: number;
@@ -822,8 +822,8 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                     });
                 });
 
-                // Group words into caption segments (~4 words each)
-                const WORDS_PER_SEGMENT = 4;
+                // Group words into caption segments (~6 words each for comfortable reading speed)
+                const WORDS_PER_SEGMENT = 6;
                 const segments: Array<{
                     text: string;
                     start: number;
@@ -860,24 +860,28 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
             console.log(`🖼️ Generating images for: "${seriesData.title}"`);
             console.log(`📸 Scenes to generate: ${scriptData.scenes?.length}`);
 
-            const IMAGE_RATIO = "9:16"; // Portrait for vertical shorts
             const MAX_RETRIES_PER_SCENE = 3;
             const totalScenes = scriptData.scenes.length;
             const imageUrls: string[] = new Array(totalScenes).fill("");
 
-            // ── Force-stop check: query DB to see if series was cancelled ──
+            // ── Shared cancellation token — passed INTO the poller so force-stop
+            //    aborts mid-poll, not just between scenes. ──────────────────────
+            const cancelSignal = { cancelled: false };
+
+            // ── Force-stop check: query DB to see if series was cancelled ──────
             async function isForceStoppedCheck(): Promise<boolean> {
                 const [current] = await db.select({ status: shortVideoSeries.status })
                     .from(shortVideoSeries)
                     .where(eq(shortVideoSeries.seriesId, seriesId));
                 if (!current || current.status === "completed" || current.status === "cancelled") {
+                    cancelSignal.cancelled = true; // ← signal the poller to stop NOW
                     console.log(`🛑 Force stop detected! Series status is "${current?.status}". Aborting all image generation.`);
                     return true;
                 }
                 return false;
             }
 
-            // ── Generate all scenes ────────────────────────────────
+            // ── Generate all scenes ────────────────────────────────────────────
             for (let i = 0; i < totalScenes; i++) {
                 if (await isForceStoppedCheck()) break;
 
@@ -886,37 +890,41 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 const prompt = scene.imagePrompt || scene.narration || "Cinematic scene illustration";
                 console.log(`🖼️ Scene ${i + 1}/${totalScenes}: "${prompt.substring(0, 80)}..."`);
 
-                let success = false;
-
                 let attemptMode = scene.sceneCategory || "general";
 
-                // Only monument scenes get image generation (Nano Banana 2)
-                // living_thing and general scenes skip to direct text-to-video via Seedance
-                if (attemptMode === "living_thing") {
-                    console.log(`🧍 Scene ${i + 1} features a living_thing, skipping image generation for direct Seedance Text-to-Video.`);
+                // Map legacy 'monument' to 'real_entity' just in case the LLM messes up
+                if (attemptMode === "monument") {
+                    attemptMode = "real_entity";
+                }
+
+                // Only real_entity scenes get image generation (Nano Banana 2)
+                // living_thing and general scenes skip to direct text-to-video via Kling 2.5 Turbo
+                if (attemptMode === "living_thing" || attemptMode === "general") {
+                    console.log(`🎬 Scene ${i + 1} features '${attemptMode}', skipping image generation for direct Text-to-Video.`);
                     imageUrls[i] = "SKIP_T2V";
                     continue;
                 }
 
-                if (attemptMode === "general") {
-                    console.log(`🎬 Scene ${i + 1} is general, skipping image generation for direct Seedance Text-to-Video.`);
-                    imageUrls[i] = "SKIP_T2V";
-                    continue;
-                }
-
-                // Monument scenes: generate photorealistic image with Nano Banana 2
+                // Real entity scenes: generate photorealistic image with Nano Banana 2
                 for (let attempt = 1; attempt <= MAX_RETRIES_PER_SCENE; attempt++) {
-                    if (await isForceStoppedCheck()) break;
+                    if (cancelSignal.cancelled || await isForceStoppedCheck()) break;
 
                     try {
-                        console.log(`🏛️ Scene ${i + 1} features a monument/real subject, using Leonardo Nano Banana 2...`);
-                        const imageUrl = await generateNanoBananaImage(prompt, 768, 1344);
+                        console.log(`🏛️ Scene ${i + 1} features a ${attemptMode} (real subject), using Nano Banana...`);
+                        // No explicit size → uses correct 768×1344 (9:16 for gemini-2.5-flash-image)
+                        const imageUrl = await generateNanoBananaImage(prompt, undefined, undefined, undefined, cancelSignal);
                         
                         imageUrls[i] = imageUrl;
                         console.log(`✅ Scene ${i + 1} Nano Banana 2 image (attempt ${attempt}): ${imageUrl.substring(0, 60)}...`);
-                        success = true;
                         break;
                     } catch (err: any) {
+                        // If cancelled, bail out immediately without retrying
+                        if (cancelSignal.cancelled || err?.message?.includes('cancelled by force stop')) {
+                            console.log(`🛑 Scene ${i + 1} image generation cancelled by force stop.`);
+                            imageUrls[i] = "SKIP_T2V";
+                            break;
+                        }
+
                         console.error(`❌ Scene ${i + 1} image generation attempt ${attempt}/${MAX_RETRIES_PER_SCENE} FAILED: ${err?.message || err}`);
 
                         // Content moderation — skip retries
@@ -940,7 +948,7 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 }
 
                 // Rate-limit between scenes
-                if (i < totalScenes - 1) {
+                if (i < totalScenes - 1 && !cancelSignal.cancelled) {
                     const delay = 2000 + Math.random() * 1000;
                     await new Promise(r => setTimeout(r, delay));
                 }
@@ -977,29 +985,32 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
         // Update status: generating scene videos (image → video)
         await step.run("update-status-videos", () => updateSeriesStatus(seriesId, "generating:videos"));
 
-        // Step 5.25: Convert scenes to video clips using Leonardo Seedance 1.0 Pro Fast
+        // Step 5.25: Convert scenes to video clips using Kling 2.5 Turbo (PARALLEL)
         const sceneVideoData = await step.run("generate-scene-videos", async () => {
-            console.log(`🎬 Generating scene video clips via Leonardo Seedance for: "${seriesData.title}"`);
+            console.log(`🎬 Generating scene video clips via Kling 2.5 Turbo (parallel) for: "${seriesData.title}"`);
             const totalScenes = scriptData.scenes.length;
             const sceneVideoUrls: string[] = new Array(totalScenes).fill("");
             const sceneThumbnailUrls: string[] = new Array(totalScenes).fill("");
-            const sceneVideoDurations: number[] = new Array(totalScenes).fill(10);
+            const sceneVideoDurations: number[] = new Array(totalScenes).fill(5);
 
-            // Force-stop check
-            async function isVideoForceStoppedCheck(): Promise<boolean> {
-                const [current] = await db.select({ status: shortVideoSeries.status })
-                    .from(shortVideoSeries)
-                    .where(eq(shortVideoSeries.seriesId, seriesId));
-                if (!current || current.status === "completed" || current.status === "cancelled") {
-                    console.log(`🛑 Force stop detected during video generation! Aborting.`);
-                    return true;
-                }
-                return false;
+            // Force-stop check before starting parallel generation
+            const [currentStatus] = await db.select({ status: shortVideoSeries.status })
+                .from(shortVideoSeries)
+                .where(eq(shortVideoSeries.seriesId, seriesId));
+            if (!currentStatus || currentStatus.status === "completed" || currentStatus.status === "cancelled") {
+                console.log(`🛑 Force stop detected before video generation! Aborting.`);
+                return { sceneVideoUrls, sceneThumbnailUrls, sceneVideoDurations };
             }
 
-            for (let i = 0; i < totalScenes; i++) {
-                if (await isVideoForceStoppedCheck()) break;
+            // Build scene configs for parallel generation
+            const sceneConfigs: Array<{
+                index: number;
+                prompt: string;
+                imageUrl?: string;
+                duration: number;
+            }> = [];
 
+            for (let i = 0; i < totalScenes; i++) {
                 const scene = scriptData.scenes[i];
                 const sceneImageUrl = imageData.imageUrls[i];
                 const videoPrompt = scene.videoPrompt || "Slow cinematic camera movement with dramatic lighting, gentle environmental motion";
@@ -1011,51 +1022,39 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                     continue;
                 }
 
-                try {
-                    // Text-to-video for general/living_thing scenes (no image)
-                    if (sceneImageUrl === "SKIP_T2V" || sceneImageUrl === "SKIP_VEO") {
-                        console.log(`🎬 Scene ${i + 1}/${totalScenes}: Seedance txt2video | duration=${sceneDuration}s`);
-                        const result = await generateLeonardoTextVideo(
-                            videoPrompt || scene.imagePrompt,
-                            sceneDuration,
-                            seriesId,
-                            i
-                        );
-                        sceneVideoUrls[i] = result.videoUrl;
-                        sceneThumbnailUrls[i] = result.thumbnailUrl;
-                        sceneVideoDurations[i] = result.actualDurationSec;
-                        console.log(`✅ Scene ${i + 1} Seedance text-to-video ready: ${result.videoUrl.substring(0, 60)}...`);
-                    } else {
-                        // Image-to-video for monument scenes (Nano Banana 2 image → Seedance)
-                        console.log(`🎬 Scene ${i + 1}/${totalScenes}: Seedance img2video (monument) | duration=${sceneDuration}s`);
-                        const result = await generateLeonardoVideo(
-                            sceneImageUrl,
-                            videoPrompt,
-                            sceneDuration,
-                            seriesId,
-                            i
-                        );
-                        sceneVideoUrls[i] = result.videoUrl;
-                        sceneThumbnailUrls[i] = result.thumbnailUrl;
-                        sceneVideoDurations[i] = result.actualDurationSec;
-                        console.log(`✅ Scene ${i + 1} Seedance img-to-video ready: ${result.videoUrl.substring(0, 60)}...`);
-                    }
-                } catch (err: any) {
-                    console.error(`❌ Scene ${i + 1} Seedance video generation failed: ${err?.message || err}`);
-                    if (sceneImageUrl !== "SKIP_T2V" && sceneImageUrl !== "SKIP_VEO") {
-                        console.log(`⚠️ Scene ${i + 1} will fall back to static image`);
-                    }
-                }
+                // Text-to-video for general/living_thing scenes, image-to-video for monument scenes
+                const isTextToVideo = sceneImageUrl === "SKIP_T2V" || sceneImageUrl === "SKIP_VEO";
+                sceneConfigs.push({
+                    index: i,
+                    prompt: videoPrompt || scene.imagePrompt,
+                    imageUrl: isTextToVideo ? undefined : sceneImageUrl,
+                    duration: sceneDuration,
+                });
 
-                // Rate-limit between scenes
-                if (i < totalScenes - 1) {
-                    const delay = 3000 + Math.random() * 2000;
-                    await new Promise(r => setTimeout(r, delay));
+                const mode = isTextToVideo ? "txt2vid" : "img2vid (monument)";
+                console.log(`📋 Scene ${i + 1}/${totalScenes}: Kling ${mode} | duration=${sceneDuration}s`);
+            }
+
+            // Submit all jobs and poll in parallel — dramatically reduces total time
+            console.log(`🚀 Submitting ${sceneConfigs.length} Kling 2.5 Turbo jobs in parallel...`);
+            try {
+                const results = await generateKlingScenesParallel(sceneConfigs, seriesId);
+
+                // Map results back to arrays
+                for (const [sceneIndex, result] of results) {
+                    sceneVideoUrls[sceneIndex] = result.videoUrl;
+                    sceneThumbnailUrls[sceneIndex] = result.thumbnailUrl;
+                    sceneVideoDurations[sceneIndex] = result.actualDurationSec;
+                    console.log(`✅ Scene ${sceneIndex + 1} Kling video ready: ${result.videoUrl.substring(0, 60)}...`);
                 }
+            } catch (err: any) {
+                console.error(`❌ Parallel Kling generation error: ${err?.message || err}`);
+                // Individual scene failures are already handled inside generateKlingScenesParallel
+                // Scenes that failed will have empty URLs and fall back to static images in Remotion
             }
 
             const videoSuccessCount = sceneVideoUrls.filter(u => u.length > 0).length;
-            console.log(`✅ Scene video generation complete: ${videoSuccessCount}/${totalScenes} videos generated via Seedance`);
+            console.log(`✅ Scene video generation complete: ${videoSuccessCount}/${totalScenes} videos generated via Kling 2.5 Turbo`);
             return { sceneVideoUrls, sceneThumbnailUrls, sceneVideoDurations };
         });
 
