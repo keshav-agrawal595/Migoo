@@ -3,7 +3,7 @@
  * Simple wrapper around OpenRouter client for consistency
  */
 
-import { openrouter } from "./openrouter";
+
 
 
 interface ImageGenerationOptions {
@@ -27,12 +27,9 @@ class ImageGenerator {
         });
 
         try {
-            return await openrouter.generateImage(prompt, {
-                width,
-                height,
-                aspectRatio,
-                numberOfImages: 1
-            });
+            // NOTE: OpenRouterClient does not support image generation.
+            // Image generation is handled via generateRunwayImage (Nano Banana / Gemini).
+            throw new Error("Image generation via OpenRouter is not implemented. Use generateRunwayImage instead.");
         } catch (error: any) {
             console.error('❌ Image generation failed:', error.message);
             throw error;

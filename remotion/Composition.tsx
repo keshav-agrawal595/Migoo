@@ -58,6 +58,10 @@ export interface CompositionProps {
   durationInFrames: number;
 }
 
+// Safety margin: never seek into the last 0.3s of a source video to avoid
+// compositor "No frame found" errors at GOP/file boundaries.
+const SAFETY_MARGIN_SEC = 1.0;
+
 // ─── Crossfade overlay: fades in then out to create a smooth bridge ───────────
 const CrossfadeBridge: React.FC<{ durationInFrames: number }> = ({ durationInFrames }) => {
   const frame = useCurrentFrame();
@@ -94,12 +98,12 @@ const AvatarClipScene: React.FC<{
   // Without this, Remotion crashes with "No frame found at position" when
   // the TTS audio (and thus the sequence) is longer than the video file.
   const pbRate = useMemo(() => {
-    if (!videoDurationSec || !durationInFrames) return 0.94;
+    if (!videoDurationSec || !durationInFrames) return 1;
     const targetDurationSec = durationInFrames / fps;
-    // Always apply 0.94× safety buffer to prevent "No frame found" crashes
-    // at the last GOP boundary of the avatar video file.
-    const rate = (videoDurationSec / targetDurationSec) * 0.94;
-    // Clamp to safe range (0.25x to 4x)
+    // Subtract fixed safety margin from video duration so we never seek
+    // into the last 0.3s — prevents compositor errors at file boundaries.
+    const safeVideoDuration = Math.max(1, videoDurationSec - SAFETY_MARGIN_SEC);
+    const rate = safeVideoDuration / targetDurationSec;
     return Math.max(0.25, Math.min(4, rate));
   }, [videoDurationSec, durationInFrames, fps]);
 
@@ -167,45 +171,12 @@ const VideoClipScene: React.FC<{
   const resolvedVideoUrl = useMemo(() => resolveLocalUrl(videoUrl) || "", [videoUrl]);
 
   // ── Crash-proof playback rate (designed for Kling 2.5 Turbo) ────────────
-  //
-  // sourceDuration = actual duration of the uploaded MP4 file (seconds):
-  //   • If server-side FFmpeg stretch SUCCEEDED → equals targetDurationSec (≈ 15s)
-  //     → rawRate ≈ 1.0, video plays at normal speed, no crash possible.
-  //   • If server-side FFmpeg stretch FAILED    → equals Kling clamp (5 or 10s)
-  //     → rawRate < 1 (e.g. 5/15 = 0.33). We MUST slow the video down to that
-  //       exact rate so Remotion never requests a frame past the video's end.
-  //       Using pbRate=1 in this case IS the cause of "No frame found" crashes.
-  //
-  // Why 0.98 buffer?
-  //   At the last frame of a 450-frame (15s) sequence, Remotion requests
-  //   video time = 449 * pbRate / fps. A 0.98 buffer keeps this just
-  //   under the file's actual last frame, preventing boundary crashes.
-  //
-  // Minimum 0.15x:
-  //   Protects against extreme slow-motion on very short clips (< 2s).
-  //
   const targetDurationSec = duration / fps;
 
   const pbRate = useMemo(() => {
-    // Fallback: If Inngest state is missing sceneVideoDurations from an older cached run,
-    // assume the worst-case Kling duration (5s) to guarantee no hard crashes.
     const actualLength = sourceDuration && sourceDuration > 0 ? sourceDuration : 5;
-
-    const rawRate = actualLength / targetDurationSec;
-
-    // ── CRITICAL: Always apply a 0.94× safety buffer regardless of direction ──
-    //
-    // H.264/H.265 videos don't end exactly at the container-declared duration.
-    // GOP boundaries mean the last decodable frame is typically 1–2 frames
-    // BEFORE the declared end time. Without this buffer, Remotion requests
-    // the exact last declared frame timestamp → compositor returns
-    // "No frame found at position XXXXXX" → render crashes.
-    //
-    // 0.94 = 6% safety margin ≈ 1–2 frame buffer at 30fps.
-    // This means we use up to 94% of the source video's declared duration.
-    //
-    // Clamped between 0.15× (min slow-motion) and 4× (max fast-forward).
-    return Math.max(0.15, Math.min(4.0, rawRate * 0.94));
+    const safeLength = Math.max(1, actualLength - SAFETY_MARGIN_SEC);
+    return Math.max(0.15, Math.min(4.0, safeLength / targetDurationSec));
   }, [sourceDuration, targetDurationSec]);
 
   return (
@@ -225,6 +196,343 @@ const VideoClipScene: React.FC<{
     </AbsoluteFill>
   );
 };
+
+// ─── Slideshow scene: cycles N images across the scene duration ───────────────
+const SlideshowScene: React.FC<{
+  urls: string[];
+  duration: number; // total frames for this scene
+}> = ({ urls, duration }) => {
+  const frame = useCurrentFrame();
+  const perSlide = Math.floor(duration / urls.length);
+  const FADE_FRAMES = 8; // cross-fade duration
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black' }}>
+      {urls.map((url, idx) => {
+        const start = idx * perSlide;
+        const end   = start + perSlide;
+        if (frame < start - FADE_FRAMES || frame >= end + FADE_FRAMES) return null;
+
+        const opacity = interpolate(
+          frame,
+          [start - FADE_FRAMES, start, end - FADE_FRAMES, end],
+          [0, 1, 1, 0],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
+        );
+        const resolvedUrl = resolveLocalUrl(url) || '';
+        return (
+          <AbsoluteFill key={idx} style={{ opacity }}>
+            <Img
+              src={resolvedUrl}
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              crossOrigin="anonymous"
+            />
+          </AbsoluteFill>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
+// ─── Split-screen scene: two user-uploaded videos stacked vertically ─────────
+// NOTE: img-to-video clips are NEVER passed here — only real user uploaded videos.
+const SplitScreenScene: React.FC<{
+  urls: [string, string];
+  duration: number;
+  sourceDuration?: number;
+}> = ({ urls, duration, sourceDuration }) => {
+  const { fps } = useVideoConfig();
+  const targetDurationSec = duration / fps;
+  const safeSourceDuration = Math.max(1, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
+  const pbRate = Math.max(0.15, Math.min(4.0, safeSourceDuration / targetDurationSec));
+
+  const topUrl    = useMemo(() => resolveLocalUrl(urls[0]) || '', [urls]);
+  const bottomUrl = useMemo(() => resolveLocalUrl(urls[1]) || '', [urls]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black', flexDirection: 'column' }}>
+      {/* Top half */}
+      <div style={{ flex: 1, overflow: 'hidden', borderBottom: '3px solid rgba(139,92,246,0.6)' }}>
+        <OffthreadVideo
+          src={topUrl}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          muted playbackRate={pbRate}
+          crossOrigin="anonymous" toneMapped={false}
+        />
+      </div>
+      {/* Bottom half */}
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <OffthreadVideo
+          src={bottomUrl}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          muted playbackRate={pbRate}
+          crossOrigin="anonymous" toneMapped={false}
+        />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+// ─── Composite scene: mixed user assets (images + videos + splits) in order ──
+// Distributes the scene's total frame duration across all assets proportionally.
+// Videos are stretched via playbackRate. Images get fair share with ken-burns.
+// NEVER modifies the user's assets — only arranges and times them.
+
+interface CompositeAssetEntry {
+  kind: 'image' | 'video' | 'split';
+  url?: string;
+  urls?: [string, string];
+  durationSec?: number;
+  durationsSec?: number[]; // per-URL durations for split assets
+  isImgToVideo?: boolean;
+}
+
+const CompositeScene: React.FC<{
+  assets: CompositeAssetEntry[];
+  duration: number; // total frames for this scene
+}> = ({ assets, duration }) => {
+  const { fps } = useVideoConfig();
+  const frame = useCurrentFrame();
+  const totalSec = duration / fps;
+  const CROSSFADE_FRAMES = 6;
+
+  // ── Time allocation strategy ─────────────────────────────────────────────
+  // 1. Videos get time proportional to their actual duration
+  // 2. Images get at least 3s each
+  // 3. If total exceeds scene duration → compress proportionally
+  // 4. If total is less → stretch videos proportionally to fill
+  const allocations = useMemo(() => {
+    const MIN_IMAGE_SEC = 3;
+
+    // Count totals
+    const imageCount = assets.filter(a => a.kind === 'image').length;
+    const videoAssets = assets.filter(a => a.kind === 'video' || a.kind === 'split');
+    const totalVideoSec = videoAssets.reduce((sum, a) => sum + (a.durationSec || 5), 0);
+    const totalImageSec = imageCount * MIN_IMAGE_SEC;
+    const rawTotal = totalVideoSec + totalImageSec;
+
+    // Calculate per-asset frame allocations
+    const allocs: number[] = [];
+
+    if (rawTotal <= 0) {
+      // Edge case: all empty → equal split
+      const each = Math.floor(duration / assets.length);
+      return assets.map(() => each);
+    }
+
+    if (rawTotal <= totalSec) {
+      // We have room to spare → stretch videos to fill
+      const extraSec = totalSec - totalImageSec;
+      const videoScale = totalVideoSec > 0 ? extraSec / totalVideoSec : 1;
+
+      for (const asset of assets) {
+        if (asset.kind === 'image') {
+          allocs.push(Math.round(MIN_IMAGE_SEC * fps));
+        } else {
+          const vidSec = (asset.durationSec || 5) * videoScale;
+          allocs.push(Math.round(vidSec * fps));
+        }
+      }
+    } else {
+      // Total exceeds scene → compress proportionally
+      const scale = totalSec / rawTotal;
+      for (const asset of assets) {
+        if (asset.kind === 'image') {
+          allocs.push(Math.max(Math.round(MIN_IMAGE_SEC * scale * fps), Math.round(fps))); // min 1s
+        } else {
+          allocs.push(Math.round((asset.durationSec || 5) * scale * fps));
+        }
+      }
+    }
+
+    // Adjust rounding to exactly match total duration
+    const allocTotal = allocs.reduce((a, b) => a + b, 0);
+    const diff = duration - allocTotal;
+    if (diff !== 0 && allocs.length > 0) {
+      // Add/subtract the difference to the largest video allocation
+      let largestIdx = 0;
+      for (let j = 1; j < allocs.length; j++) {
+        if (allocs[j] > allocs[largestIdx]) largestIdx = j;
+      }
+      allocs[largestIdx] += diff;
+    }
+
+    return allocs;
+  }, [assets, duration, fps, totalSec]);
+
+  // ── Compute cumulative start frames ──────────────────────────────────────
+  const startFrames = useMemo(() => {
+    const starts: number[] = [0];
+    for (let k = 0; k < allocations.length - 1; k++) {
+      starts.push(starts[k] + allocations[k]);
+    }
+    return starts;
+  }, [allocations]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black' }}>
+      {assets.map((asset, idx) => {
+        const assetStart = startFrames[idx];
+        const assetDuration = allocations[idx];
+        if (assetDuration <= 0) return null;
+
+        // Only render assets that are in view (± crossfade)
+        if (frame < assetStart - CROSSFADE_FRAMES || frame >= assetStart + assetDuration + CROSSFADE_FRAMES) {
+          return null;
+        }
+
+        // Crossfade opacity
+        const opacity = interpolate(
+          frame,
+          [
+            assetStart - CROSSFADE_FRAMES,
+            assetStart,
+            assetStart + assetDuration - CROSSFADE_FRAMES,
+            assetStart + assetDuration,
+          ],
+          [0, 1, 1, idx === assets.length - 1 ? 1 : 0], // last asset stays visible
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }
+        );
+
+        const localFrame = frame - assetStart;
+
+        return (
+          <AbsoluteFill key={idx} style={{ opacity }}>
+            {asset.kind === 'image' && asset.url && (
+              <CompositeImageSub
+                url={asset.url}
+                duration={assetDuration}
+                localFrame={localFrame}
+                index={idx}
+              />
+            )}
+            {asset.kind === 'video' && asset.url && (
+              <CompositeVideoSub
+                url={asset.url}
+                duration={assetDuration}
+                sourceDuration={asset.durationSec}
+              />
+            )}
+            {asset.kind === 'split' && asset.urls && (
+              <CompositeSplitSub
+                urls={asset.urls}
+                duration={assetDuration}
+                sourceDuration={asset.durationSec || (asset.durationsSec ? Math.min(...asset.durationsSec.filter(Boolean)) : undefined)}
+              />
+            )}
+          </AbsoluteFill>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
+// ── Sub-components for CompositeScene ─────────────────────────────────────────
+
+const CompositeImageSub: React.FC<{
+  url: string;
+  duration: number;
+  localFrame: number;
+  index: number;
+}> = ({ url, duration, localFrame, index }) => {
+  const resolvedUrl = useMemo(() => resolveLocalUrl(url) || '', [url]);
+  const animationType = index % 3;
+
+  let animationStyle: React.CSSProperties = {};
+  const safeFrame = Math.max(0, localFrame);
+
+  if (animationType === 0) {
+    const scale = interpolate(safeFrame, [0, duration], [1, 1.12], { extrapolateRight: 'clamp' });
+    animationStyle = { transform: `scale(${scale})` };
+  } else if (animationType === 1) {
+    const translateY = interpolate(safeFrame, [0, duration], [0, -25], { extrapolateRight: 'clamp' });
+    animationStyle = { transform: `translateY(${translateY}px) scale(1.06)` };
+  } else {
+    const translateY = interpolate(safeFrame, [0, duration], [-25, 0], { extrapolateRight: 'clamp' });
+    animationStyle = { transform: `translateY(${translateY}px) scale(1.06)` };
+  }
+
+  return (
+    <AbsoluteFill>
+      <Img
+        src={resolvedUrl}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          ...animationStyle,
+        }}
+        crossOrigin="anonymous"
+      />
+    </AbsoluteFill>
+  );
+};
+
+const CompositeVideoSub: React.FC<{
+  url: string;
+  duration: number; // frames
+  sourceDuration?: number; // seconds
+}> = ({ url, duration, sourceDuration }) => {
+  const { fps } = useVideoConfig();
+  const resolvedUrl = useMemo(() => resolveLocalUrl(url) || '', [url]);
+  const targetSec = duration / fps;
+
+  // Stretch video to exactly fill allocated time (no freeze)
+  const pbRate = useMemo(() => {
+    const actual = sourceDuration && sourceDuration > 0 ? sourceDuration : 5;
+    const safeActual = Math.max(1, actual - SAFETY_MARGIN_SEC);
+    return Math.max(0.15, Math.min(4.0, safeActual / targetSec));
+  }, [sourceDuration, targetSec]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black' }}>
+      <OffthreadVideo
+        src={resolvedUrl}
+        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        muted
+        playbackRate={pbRate}
+        crossOrigin="anonymous"
+        toneMapped={false}
+      />
+    </AbsoluteFill>
+  );
+};
+
+const CompositeSplitSub: React.FC<{
+  urls: [string, string];
+  duration: number;
+  sourceDuration?: number;
+}> = ({ urls, duration, sourceDuration }) => {
+  const { fps } = useVideoConfig();
+  const targetSec = duration / fps;
+  const safeSrcDur = Math.max(1, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
+  const pbRate = Math.max(0.15, Math.min(4.0, safeSrcDur / targetSec));
+
+  const topUrl = useMemo(() => resolveLocalUrl(urls[0]) || '', [urls]);
+  const bottomUrl = useMemo(() => resolveLocalUrl(urls[1]) || '', [urls]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black', flexDirection: 'column' }}>
+      <div style={{ flex: 1, overflow: 'hidden', borderBottom: '3px solid rgba(139,92,246,0.6)' }}>
+        <OffthreadVideo
+          src={topUrl}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          muted playbackRate={pbRate}
+          crossOrigin="anonymous" toneMapped={false}
+        />
+      </div>
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <OffthreadVideo
+          src={bottomUrl}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          muted playbackRate={pbRate}
+          crossOrigin="anonymous" toneMapped={false}
+        />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 
 // ─── Captions component (only shown during content scenes) ────────────────────
 const Captions: React.FC<{
@@ -425,23 +733,75 @@ export const MainComposition: React.FC<CompositionProps> = ({
 
       {/* AI scene clips: use video if available, fallback to static image */}
       {imageUrls?.map((url, i) => {
-        const sceneVideoUrl = sceneVideoUrls?.[i];
+        const sceneVideoUrl    = sceneVideoUrls?.[i];
+        const sourceDurationSec = sceneVideoDurations?.[i];
+
+        // ── Parse JSON payloads (composite / split-screen / slideshow) ────────
+        let compositePayload: { type: 'composite'; assets: CompositeAssetEntry[] } | null = null;
+        let splitPayload: { type: 'split'; urls: [string, string] } | null = null;
+        let slideshowPayload: { type: 'slideshow'; urls: string[] } | null = null;
+
+        // Check sceneVideoUrl for composite/split JSON
+        if (sceneVideoUrl) {
+          try {
+            const parsed = JSON.parse(sceneVideoUrl);
+            if (parsed?.type === 'composite' && Array.isArray(parsed.assets)) {
+              compositePayload = parsed as any;
+            } else if (parsed?.type === 'split' && Array.isArray(parsed.urls) && parsed.urls.length >= 2) {
+              splitPayload = parsed as any;
+            }
+          } catch {}
+        }
+
+        // Check imageUrl for slideshow JSON
+        if (!compositePayload && !splitPayload && url) {
+          try {
+            const parsed = JSON.parse(url);
+            if (parsed?.type === 'slideshow' && Array.isArray(parsed.urls)) {
+              slideshowPayload = parsed as any;
+            }
+          } catch {}
+        }
+
         const isSkipMarker = !url || url === 'SKIP_T2V' || url === 'SKIP_VEO' || url === '';
-        // Skip scenes with no image AND no video
-        if (isSkipMarker && !sceneVideoUrl) return null;
+
+        // Skip scenes with absolutely nothing to render
+        if (isSkipMarker && !sceneVideoUrl && !compositePayload && !splitPayload && !slideshowPayload) return null;
+
         return (
           <Sequence
             key={i}
             from={contentStart + i * sceneDuration}
             durationInFrames={sceneDuration}
           >
-            {sceneVideoUrl ? (
-              <VideoClipScene 
-                videoUrl={sceneVideoUrl} 
-                duration={sceneDuration} 
-                sourceDuration={sceneVideoDurations?.[i]}
+            {compositePayload ? (
+              // ── Composite: mixed user assets in exact order ─────────────────
+              <CompositeScene
+                assets={compositePayload.assets}
+                duration={sceneDuration}
+              />
+            ) : splitPayload ? (
+              // ── Split-screen: two real user videos side-by-side ─────────────
+              <SplitScreenScene
+                urls={splitPayload.urls}
+                duration={sceneDuration}
+                sourceDuration={sourceDurationSec}
+              />
+            ) : slideshowPayload ? (
+              // ── Slideshow: cycle N images smoothly ──────────────────────────
+              <SlideshowScene
+                urls={slideshowPayload.urls}
+                duration={sceneDuration}
+              />
+            ) : sceneVideoUrl ? (
+              // ── AI/user video clip ───────────────────────────────────────────
+              <VideoClipScene
+                videoUrl={sceneVideoUrl}
+                duration={sceneDuration}
+                sourceDuration={sourceDurationSec}
               />
             ) : !isSkipMarker ? (
+              // ── Static image with ken-burns ──────────────────────────────────
               <VideoScene imageUrl={url} duration={sceneDuration} index={i} />
             ) : (
               <AbsoluteFill style={{ backgroundColor: 'black' }} />

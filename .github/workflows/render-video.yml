@@ -31,7 +31,12 @@ jobs:
       - name: Render Video
         run: |
           npx remotion render MainVideo out/video.mp4 \
-            --props="./tmp/props.json"
+            --props="./tmp/props.json" \
+            --timeout=120000 \
+            --disable-web-security \
+            --concurrency=4 \
+            --offthread-video-cache-size-in-bytes=3221225472 \
+            --jpeg-quality=75
 
       - name: Upload to Appwrite Storage & Notify Webhook
         env:

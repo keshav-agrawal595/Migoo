@@ -40,12 +40,14 @@ async function transcode(input, output) {
     // -vsync cfr    → enforce CFR (constant frame rate)
     // -g 1          → every frame is a keyframe (I-frame only)
     // -keyint_min 1 → minimum keyframe interval = 1 (all keyframes)
+    // -sc_threshold 0 → disable scene-change detection for consistent frame boundaries
     // -bf 0         → no B-frames
     // -refs 1       → single reference frame
+    // -preset slow  → higher quality encoding for more reliable compositor decoding
     // -pix_fmt yuv420p → broad compatibility
     // -an              → strip audio (we play our own TTS audio in Remotion)
     // -movflags +faststart → moov atom at file start for instant seeking (required by Remotion compositor)
-    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -r 30 -vsync cfr -c:v libx264 -crf 20 -g 1 -keyint_min 1 -bf 0 -refs 1 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
+    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -r 30 -vsync cfr -c:v libx264 -preset slow -crf 18 -g 1 -keyint_min 1 -sc_threshold 0 -bf 0 -refs 1 -pix_fmt yuv420p -an -movflags +faststart "${outputPath}"`;
 
     console.log(`🎬 Re-transcoding (all-keyframe): ${input} → ${output}`);
     return new Promise((resolve, reject) =>

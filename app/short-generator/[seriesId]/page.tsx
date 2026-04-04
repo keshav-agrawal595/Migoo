@@ -12,7 +12,9 @@ import {
     Loader2,
     MessageSquarePlus,
     Mic,
+    MoreVertical,
     Play,
+    RefreshCw,
     Sparkles,
     Subtitles,
     Video,
@@ -93,6 +95,9 @@ function SeriesVideosPageContent() {
     const [selectedVideo, setSelectedVideo] = useState<VideoAsset | null>(null)
     const [resettingStatus, setResettingStatus] = useState(false)
     const [showTopicDialog, setShowTopicDialog] = useState(false)
+    const [reRenderingId, setReRenderingId] = useState<string | null>(null)
+    const [openCardPopover, setOpenCardPopover] = useState<string | null>(null)
+    const cardPopoverRef = useRef<HTMLDivElement>(null)
     const hasTriggeredGenerate = useRef(false)
 
     // ─── Fetch series + videos ───────────────────────────────────────
@@ -135,6 +140,17 @@ function SeriesVideosPageContent() {
             window.removeEventListener('focus', handleRefresh);
         };
     }, [fetchData]);
+
+    // Close card popover on outside click
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (cardPopoverRef.current && !cardPopoverRef.current.contains(e.target as Node)) {
+                setOpenCardPopover(null)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [])
 
     // ─── Auto-trigger generation if ?generate=true ───────────────────
     useEffect(() => {
@@ -197,6 +213,35 @@ function SeriesVideosPageContent() {
             toast.error('Failed to start video generation')
         }
         setTriggeringGeneration(false)
+    }
+
+    // ─── Re-render a failed/completed video ──────────────────────────
+    const handleReRender = async (videoId: string) => {
+        setOpenCardPopover(null)
+        setReRenderingId(videoId)
+        try {
+            const res = await fetch('/api/video/re-render', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ videoId }),
+            })
+            const data = await res.json()
+            if (data.success) {
+                toast.success('Re-render started! Your AI credits are safe.')
+                // Immediately update local state to reflect rendering status
+                setVideos(prev => prev.map(v =>
+                    v.videoId === videoId
+                        ? { ...v, status: 'rendering', videoUrl: null }
+                        : v
+                ))
+                fetchData()
+            } else {
+                toast.error(data.error || 'Failed to start re-render')
+            }
+        } catch {
+            toast.error('Failed to start re-render')
+        }
+        setReRenderingId(null)
     }
 
     const activeStepIndex = getActiveStepIndex(series?.status ?? null)
@@ -472,7 +517,7 @@ function SeriesVideosPageContent() {
                             {/* Status overlay badge */}
                             <div className={`absolute top-3 left-3 flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide backdrop-blur-sm ${
                                 video.status === 'completed' && video.videoUrl
-                                    ? 'bg-emerald-500/90 text-white' // Final MP4 ready
+                                    ? 'bg-emerald-500/90 text-white'
                                     : video.status === 'failed'
                                         ? 'bg-red-500/90 text-white'
                                         : 'bg-amber-500/90 text-white'
@@ -486,12 +531,58 @@ function SeriesVideosPageContent() {
                                 )}
                             </div>
 
+                            {/* Three-dot menu — top right */}
+                            <div
+                                className="absolute top-3 right-3 z-10"
+                                ref={openCardPopover === video.videoId ? cardPopoverRef : null}
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        setOpenCardPopover(openCardPopover === video.videoId ? null : video.videoId)
+                                    }}
+                                    className="w-8 h-8 rounded-lg bg-black/40 backdrop-blur-sm flex items-center justify-center text-white opacity-0 group-hover:opacity-100 hover:bg-black/60 transition-all duration-200 cursor-pointer"
+                                >
+                                    <MoreVertical className="w-4 h-4" />
+                                </button>
+
+                                {/* Popover menu */}
+                                {openCardPopover === video.videoId && (
+                                    <div className="absolute right-0 top-9 z-30 w-44 bg-white rounded-xl border border-border/60 shadow-xl shadow-black/10 py-1.5 animate-in fade-in zoom-in-95 duration-150">
+                                        {/* Re-render option — shown for failed/completed/pending videos (not while rendering) */}
+                                        {video.status !== 'rendering' && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    handleReRender(video.videoId)
+                                                }}
+                                                disabled={reRenderingId === video.videoId}
+                                                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted/50 transition-colors cursor-pointer disabled:opacity-50"
+                                            >
+                                                {reRenderingId === video.videoId ? (
+                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                ) : (
+                                                    <RefreshCw className="w-3.5 h-3.5" />
+                                                )}
+                                                Re-render MP4
+                                            </button>
+                                        )}
+                                        {video.status === 'rendering' && (
+                                            <div className="flex items-center gap-2.5 px-3 py-2 text-sm text-muted-foreground">
+                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                Rendering...
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
                             {/* Duration badge — includes intro + narration + outro */}
                             {video.audioDuration && (
                                 <div className="absolute bottom-3 right-3 flex items-center gap-1 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm text-white text-[11px] font-medium">
                                     <Clock className="w-3 h-3" />
                                     {(() => {
-                                        // Total = intro (~9s avg) + narration audio + outro (~9.5s avg)
                                         const INTRO_DURATION = 9;
                                         const OUTRO_DURATION = 9.5;
                                         const totalSec = (video.audioDuration || 0) + INTRO_DURATION + OUTRO_DURATION;

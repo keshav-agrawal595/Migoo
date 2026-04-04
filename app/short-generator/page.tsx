@@ -2,6 +2,7 @@
 import { useUser } from '@clerk/nextjs'
 import { motion } from 'framer-motion'
 import {
+    ArrowRight,
     Calendar,
     Clapperboard,
     Edit3,
@@ -257,6 +258,38 @@ function ShortGeneratorPage() {
             {/* Content — New Series Tab */}
             {activeTab === 'new' && (
                 <>
+                    {/* Director's Chair CTA */}
+                    <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.15 }}
+                        className="mb-6"
+                    >
+                        <Link href="/studio/create" className="group block">
+                            <div className="relative rounded-2xl border border-border/80 bg-white p-5 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/5 transition-all duration-300 overflow-hidden shadow-sm">
+                                <div className="relative flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform duration-300">
+                                        <Clapperboard className="w-6 h-6 text-primary" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-[10px] bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                                                ⭐ Migoo Studio
+                                            </span>
+                                        </div>
+                                        <h3 className="font-bold text-sm text-foreground">
+                                            Full Creative Studio
+                                        </h3>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            Upload PDFs · Inject your own footage · Edit every scene · Human-touched content that survives demonetization
+                                        </p>
+                                    </div>
+                                    <ArrowRight className="w-5 h-5 text-muted-foreground group-hover:text-primary group-hover:translate-x-1 transition-all shrink-0" />
+                                </div>
+                            </div>
+                        </Link>
+                    </motion.div>
+
                     {/* Loading Skeletons */}
                     {loading && (
                         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">

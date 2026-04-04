@@ -46,7 +46,6 @@ export async function generateClipdropImage(prompt: string): Promise<string> {
         const blob = await putWithRotation(filename, imageBuffer, {
             access: "public",
             contentType: "image/png",
-            addRandomSuffix: false,
         });
 
         console.log(`✅ Uploaded to Vercel Blob: ${blob.url}`);

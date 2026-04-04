@@ -104,7 +104,6 @@ export async function generateRunwayImage(
         const blob = await putWithRotation(filename, imageBuffer, {
             access: "public",
             contentType,
-            addRandomSuffix: false,
         });
 
         console.log(`✅ Uploaded to Vercel Blob: ${blob.url}`);

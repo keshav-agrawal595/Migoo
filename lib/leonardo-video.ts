@@ -389,7 +389,11 @@ async function submitKlingImg2VidJob(
             try {
                 console.log(`⏳ Submitting Kling 2.5 Turbo img2vid (${keyLabel}, attempt ${attempt})...`);
 
-                const cleanPrompt = prompt.replace(/\s+/g, " ").trim().substring(0, 1490);
+                // Clean prompt: strip text-generating phrases and append anti-text suffix
+                let cleanPrompt = prompt
+                    .replace(/\b(text|title|caption|subtitle|label|watermark|logo|word|letter|overlay|heading|banner|sign|writing|inscription|credit|quote)[\w]*\b/gi, '')
+                    .replace(/\s+/g, " ").trim().substring(0, 1400);
+                cleanPrompt += " Pure visual motion only. No text, no titles, no words, no labels, no watermarks.";
 
                 // Kling 2.5 Turbo v1 API — flat request body (NOT nested under "parameters")
                 const requestBody = {
@@ -508,7 +512,11 @@ async function submitKlingTxt2VidJob(
         try {
             console.log(`⏳ Submitting Kling 2.5 Turbo txt2vid (${keyLabel})...`);
 
-            const cleanPrompt = prompt.replace(/\s+/g, " ").trim().substring(0, 1490);
+            // Clean prompt: strip text-generating phrases and append anti-text suffix
+            let cleanPrompt = prompt
+                .replace(/\b(text|title|caption|subtitle|label|watermark|logo|word|letter|overlay|heading|banner|sign|writing|inscription|credit|quote)[\w]*\b/gi, '')
+                .replace(/\s+/g, " ").trim().substring(0, 1400);
+            cleanPrompt += " Pure visual motion only. No text, no titles, no words, no labels, no watermarks.";
 
             // Kling 2.5 Turbo v1 API — flat request body
             const requestBody = {

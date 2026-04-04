@@ -3,9 +3,11 @@ import { shortVideoAssets, shortVideoSeries } from "@/config/schema";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { triggerRender } from "@/lib/video-render";
+import { getMusicUrl } from "@/lib/music-urls";
 
 /**
  * API to trigger MP4 rendering for a short video.
+ * Includes ALL stored props (scene videos, music, avatar clips, etc.)
  */
 export async function POST(req: Request) {
     try {
@@ -23,12 +25,16 @@ export async function POST(req: Request) {
 
         // 2. Fetch series config for additional props
         const [series] = await db.select().from(shortVideoSeries).where(eq(shortVideoSeries.seriesId, video.seriesId));
+        const musicUrl = series?.music ? getMusicUrl(series.music) : '';
 
-        // 3. Prepare props for Remotion
-        const props = {
-            imageUrls: video.imageUrls,
+        // 3. Prepare props for Remotion — include ALL stored data
+        const props: Record<string, any> = {
+            imageUrls: video.imageUrls || [],
+            sceneVideoUrls: (video.sceneVideoUrls as string[]) || [],
             audioUrl: video.audioUrl,
-            captionData: video.captionData,
+            audioDuration: video.audioDuration,
+            musicUrl,
+            captionData: video.captionData || { segments: [] },
             captionStyle: series?.captionStyle || 'bold-pop',
             language: series?.language || 'en-IN',
             durationInFrames: Math.floor((video.audioDuration || 60) * 30),

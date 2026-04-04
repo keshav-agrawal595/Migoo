@@ -10,6 +10,101 @@ import { triggerRender } from "@/lib/video-render";
 import { and, eq, or } from "drizzle-orm";
 import { inngest } from "./client";
 
+// ─── Lightweight MP4 duration prober (works on serverless, no ffprobe) ────────
+// Fetches up to 2 MB of the file and walks MP4 box headers looking for
+// the `mvhd` atom inside `moov`. Falls back to file-size estimation.
+
+async function probeVideoDuration(url: string): Promise<number> {
+    const DEFAULT_DURATION = 5; // seconds – safe fallback
+    try {
+        // Fetch first 2 MB (moov is usually at the start for web-optimized videos)
+        const res = await fetch(url, {
+            headers: { Range: "bytes=0-2097151" },
+        });
+        if (!res.ok && res.status !== 206) {
+            // If range not supported, try full fetch with small timeout
+            const fullRes = await fetch(url);
+            if (!fullRes.ok) return DEFAULT_DURATION;
+            const buf = Buffer.from(await fullRes.arrayBuffer());
+            return parseMp4Duration(buf) || estimateFromSize(buf.length);
+        }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const parsed = parseMp4Duration(buf);
+        if (parsed && parsed > 0) return parsed;
+
+        // Fallback: estimate from Content-Length
+        const cl = res.headers.get("content-range");
+        const totalMatch = cl?.match(/\/(\d+)/);
+        const totalBytes = totalMatch ? parseInt(totalMatch[1]) : buf.length;
+        return estimateFromSize(totalBytes);
+    } catch (err) {
+        console.warn(`⚠️ probeVideoDuration failed for ${url.substring(0, 60)}: ${err}`);
+        return DEFAULT_DURATION;
+    }
+}
+
+function estimateFromSize(bytes: number): number {
+    // Rough estimate: ~500 KB/s for a typical 720p short video
+    return Math.max(3, Math.min(60, bytes / (500 * 1024)));
+}
+
+function parseMp4Duration(buf: Buffer): number | null {
+    // Walk top-level MP4 boxes looking for 'moov'
+    let offset = 0;
+    while (offset + 8 <= buf.length) {
+        const size = buf.readUInt32BE(offset);
+        const type = buf.toString("ascii", offset + 4, offset + 8);
+        if (size < 8) break; // invalid box
+        if (offset + size > buf.length && type !== "moov") {
+            offset += size;
+            continue;
+        }
+
+        if (type === "moov") {
+            // Search inside moov for mvhd
+            return parseMvhdInBox(buf, offset + 8, Math.min(offset + size, buf.length));
+        }
+        offset += size;
+    }
+    return null;
+}
+
+function parseMvhdInBox(buf: Buffer, start: number, end: number): number | null {
+    let offset = start;
+    while (offset + 8 <= end) {
+        const size = buf.readUInt32BE(offset);
+        const type = buf.toString("ascii", offset + 4, offset + 8);
+        if (size < 8) break;
+
+        if (type === "mvhd") {
+            // mvhd box: version(1) + flags(3) + created(4/8) + modified(4/8) + timescale(4) + duration(4/8)
+            const version = buf.readUInt8(offset + 8);
+            if (version === 0) {
+                const timescale = buf.readUInt32BE(offset + 20);
+                const duration  = buf.readUInt32BE(offset + 24);
+                if (timescale > 0) return duration / timescale;
+            } else if (version === 1) {
+                const timescale = buf.readUInt32BE(offset + 28);
+                // 64-bit duration: read high + low 32 bits
+                const durHigh = buf.readUInt32BE(offset + 32);
+                const durLow  = buf.readUInt32BE(offset + 36);
+                const duration = durHigh * 0x100000000 + durLow;
+                if (timescale > 0) return duration / timescale;
+            }
+            return null;
+        }
+
+        // Recurse into container boxes (trak, etc.)
+        if (type === "trak" || type === "mdia" || type === "minf" || type === "stbl" || type === "udta" || type === "edts") {
+            const inner = parseMvhdInBox(buf, offset + 8, Math.min(offset + size, end));
+            if (inner !== null) return inner;
+        }
+
+        offset += size;
+    }
+    return null;
+}
+
 // ─── HeyGen Avatar Clip Configuration ────────────────────────────────────────
 
 const AVATAR_CLIPS = {
@@ -343,7 +438,29 @@ export const generateShortVideo = inngest.createFunction(
     },
     { event: "shorts/generate.video" },
     async ({ event, step }) => {
-        const { seriesId, customTopic } = event.data;
+        const { seriesId, customTopic, studioPayload } = event.data;
+        // studioPayload = { scriptData, sceneAssets[], captionStyle, voice, music, contextMarkdown }
+        // OR legacy:    { scriptData, sceneAssetTypes[], sceneCustomUrls[], ... }
+
+        // ── Normalise payload to unified sceneAssets[] ─────────────────────────────
+        function resolveSceneAsset(i: number) {
+            // New format
+            if (studioPayload?.sceneAssets?.[i]) return studioPayload.sceneAssets[i];
+            // Legacy format fallback
+            const legacyType = studioPayload?.sceneAssetTypes?.[i];
+            const legacyUrl  = studioPayload?.sceneCustomUrls?.[i];
+            if (legacyType && legacyType !== 'ai') {
+                return {
+                    type: legacyType,
+                    files: legacyUrl ? [{ url: legacyUrl, fileId: '', isVideo: /\.(mp4|mov|webm)/i.test(legacyUrl), mimeType: '' }] : [],
+                    imgToVideoEnabled: false,
+                    splitScreenEnabled: false,
+                    splitPairs: [],
+                    docImageUrl: legacyType === 'doc_image' ? legacyUrl : null,
+                };
+            }
+            return null;
+        }
 
         // Step 1: Fetch series from DB
         const seriesData = await step.run("fetch-series", async () => {
@@ -363,8 +480,13 @@ export const generateShortVideo = inngest.createFunction(
         // Update status: generating script
         await step.run("update-status-script", () => updateSeriesStatus(seriesId, "generating:script"));
 
-        // Step 2: Generate Video Script using Sarvam-105B
+        // Step 2: Generate Video Script — skip when Studio pre-edited script is provided
         const scriptData = await step.run("generate-video-script", async () => {
+            // ── STUDIO MODE: Use pre-edited user script ─────────────────────
+            if (studioPayload?.scriptData) {
+                console.log(`🎬 Studio mode: using pre-edited script (${studioPayload.scriptData.scenes?.length} scenes)`);
+                return studioPayload.scriptData;
+            }
             console.log(`📝 Generating video script for: "${seriesData.title}"`);
 
             // ── Always target 80-120 seconds for engaging short videos ──
@@ -417,12 +539,12 @@ SCRIPT REQUIREMENTS:
 3. LANGUAGE & NATIVE FLOW: Write ENTIRELY in ${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}. You MUST use natural, native-sounding phrasing. Do NOT just translate English idioms literally. The narration MUST flow seamlessly and logically from one scene to the next.
 4. NARRATION STYLE: Write a seamless, highly engaging story or compelling argument. Do NOT use meta-commentary, structural announcements, or "content framing" (e.g., NEVER say "Scene 1", "Here is a story about...", "Welcome to the video"). Start directly with the hook. The points MUST be highly interesting and directly address the user's title. Each scene must have 40-50 words (3-4 descriptive sentences).
 419. 5. IMAGE PROMPTS (CRITICAL — DETAILED): For scenes categorized as 'real_entity', write EXTREMELY detailed, masterpiece-level image generation prompts (30-50 words). Include: specific subject, exact architectural/facial details, lighting direction and quality (golden hour, dramatic side-lighting, soft diffused), camera angle (low angle, eye level, aerial), atmosphere (misty, clear, hazy), color palette, texture details, and photographic style (DSLR, 85mm lens, f/2.8). These prompts will be used by Leonardo AI Nano Banana 2 model for photorealistic image generation.
-420. 6. VIDEO PROMPTS (CRITICAL — DETAILED): For EVERY scene, write an extremely detailed "videoPrompt" (30-50 words) describing a cinematic video clip. Include: specific camera movements (slow dolly-in, sweeping crane shot, tracking shot...
+420. 6. VIDEO PROMPTS (CRITICAL — DETAILED): For EVERY scene, write an extremely detailed "videoPrompt" (30-50 words) describing a cinematic video clip. Include: specific camera movements (slow dolly-in, sweeping crane shot, tracking shot). ⚠️ CRITICAL: videoPrompt MUST describe ONLY visual motion and cinematography. NEVER include any text, titles, captions, words, labels, watermarks, logos, subtitles, or any written content in the videoPrompt. The video generation AI (Kling 2.5 Turbo) will literally render any text you mention. Focus PURELY on camera movement, lighting, environmental effects, and subject motion.
 421. 7. THUMBNAIL PROMPT (CRITICAL): Generate a highly specific, stunning, and click-worthy "thumbnailPrompt" (30-40 words) for the video's cover image. This prompt will be used by Nano Banana 2 (Leonardo AI) to create a cinematic, masterpiece-level thumbnail. ⚠️ IMPORTANT: The thumbnail MUST NOT contain any text, words, letters, or numbers. Focus ONLY on visual storytelling. CRITICAL: NO TEXT, NO WORDS, NO LETTERS.
 422. 8. SCENE CATEGORIZATION (CRITICAL): You MUST accurately categorize each scene's content into one of these EXACT string values:
 423.    - "real_entity": if the scene features a REAL person (historical figures, athletes, politicians), real monument, real artifact, real architecture, real historical site, real landmark, or real personal identity from any field.
 424.    - "living_thing": if the scene features fictional/generic people, generic characters, animals, or any living creatures (NOT real historical figures).
-425.    - "general": for abstract concepts, graphics, text overlays, or anything else.
+425.    - "general": for abstract concepts, graphics, visual effects, or anything else.
 426.    NOTE: Scenes categorized as 'real_entity' will get a Nano Banana 2 photorealistic image first, then converted to video via Kling 2.5 Turbo. All other scenes will get direct text-to-video generation via Kling. So categorize wisely for best visual results!
 427. 9. TTS FORMATTING: Do NOT use ellipses (...), em-dashes (—), en-dashes (–), colons (:), semicolons (;), ALL CAPS, parenthetical asides, or excessive punctuation in the narration. Do NOT use elongated/stretched words like "soooo", "amaziiing", "reaaally" etc. Write clean, short, grammatically correct sentences using only periods, commas, question marks, and exclamation marks. Use the target language (${seriesData.language === 'hi-IN' ? 'HINDI' : 'ENGLISH'}) with natural pacing. This is CRITICAL to prevent the Text-To-Speech engine from unnaturally stretching words or pausing too long.
 428. 
@@ -438,7 +560,7 @@ SCRIPT REQUIREMENTS:
   "scene1": {
     "narration": "Gripping segment with NO intro framing (40-50 words)...",
     "imagePrompt": "Ultra-detailed visual description for Nano Banana 2 image generation (30-50 words, cinematic, photorealistic)...",
-    "videoPrompt": "Extremely detailed animation/video description for Kling 2.5 Turbo (30-50 words, camera movements, environmental effects, lighting)...",
+    "videoPrompt": "Extremely detailed animation/video description — ONLY visual motion, camera movements, environmental effects, lighting. ABSOLUTELY NO TEXT, NO TITLES, NO WORDS, NO LABELS in video...",
     "sceneCategory": "real_entity",
     "duration": 15,
     "wordCount": 45
@@ -482,9 +604,34 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 console.log(`🔄 Script generation attempt ${attempt}/${MAX_ATTEMPTS} (Gemini 2.5 Flash)...`);
 
                 try {
+                    const _sceneSchema = {
+                        type: 'object',
+                        properties: {
+                            narration:     { type: 'string' },
+                            imagePrompt:   { type: 'string' },
+                            videoPrompt:   { type: 'string' },
+                            sceneCategory: { type: 'string', enum: ['real_entity', 'living_thing', 'general', 'doc_image'] },
+                            asset_url:     { type: 'string', nullable: true },
+                            duration:      { type: 'number' },
+                            wordCount:     { type: 'number' },
+                        },
+                        required: ['narration', 'imagePrompt', 'videoPrompt', 'sceneCategory'],
+                    };
                     const result = await gemini.json(systemPrompt, userPrompt, {
                         temperature: attempt === 1 ? 0.75 : 0.85,
                         maxOutputTokens: 8192,
+                        schema: {
+                            type: 'object',
+                            properties: {
+                                videoTitle:      { type: 'string' },
+                                thumbnailPrompt: { type: 'string' },
+                                totalScenes:     { type: 'number' },
+                                totalWordCount:  { type: 'number' },
+                                scene1: _sceneSchema, scene2: _sceneSchema, scene3: _sceneSchema,
+                                scene4: _sceneSchema, scene5: _sceneSchema, scene6: _sceneSchema,
+                            },
+                            required: ['videoTitle', 'thumbnailPrompt', 'scene1', 'scene2', 'scene3', 'scene4', 'scene5', 'scene6'],
+                        },
                     });
 
                     // ── Map explicit keys back to scenes array ────────────────
@@ -863,6 +1010,12 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
             const MAX_RETRIES_PER_SCENE = 3;
             const totalScenes = scriptData.scenes.length;
             const imageUrls: string[] = new Array(totalScenes).fill("");
+            // sceneOverrides: pre-computed video payloads that bypass Kling
+            // (split-screen JSON strings keyed by scene index)
+            const sceneOverrides: Record<number, string> = {};
+            // sceneProbedDurations: actual video file durations (seconds) probed from user uploads
+            // Used later to set correct playbackRate — prevents "No frame found" crashes
+            const sceneProbedDurations: Record<number, number> = {};
 
             // ── Shared cancellation token — passed INTO the poller so force-stop
             //    aborts mid-poll, not just between scenes. ──────────────────────
@@ -895,6 +1048,171 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 // Map legacy 'monument' to 'real_entity' just in case the LLM messes up
                 if (attemptMode === "monument") {
                     attemptMode = "real_entity";
+                }
+
+                // ── STUDIO MODE: User provided their own asset(s) ─────────────────
+                const sceneAsset = resolveSceneAsset(i);
+                if (sceneAsset && (sceneAsset.type === "user_upload" || sceneAsset.type === "doc_image")) {
+                    if (sceneAsset.type === "doc_image") {
+                        const docUrl = sceneAsset.docImageUrl || sceneAsset.files?.[0]?.url || "";
+                        console.log(`📸 Studio Scene ${i + 1}: doc_image → ${docUrl.substring(0, 60)}`);
+                        imageUrls[i] = docUrl || "SKIP_T2V";
+                        continue;
+                    }
+
+                    // ── user_upload: Build COMPOSITE payload preserving ALL assets in user order ──
+                    // PRINCIPLE: Never modify user-finalized assets. Only arrange + time them.
+                    const allFiles: any[] = sceneAsset.files || [];
+                    const splitPairs: [string, string][] = sceneAsset.splitPairs || [];
+                    // Legacy split-screen support
+                    const realVideos = allFiles.filter((f: any) => f.isVideo && !f.isImgToVideo);
+                    const legacySplit = splitPairs.length === 0 && sceneAsset.splitScreenEnabled && realVideos.length >= 2;
+                    if (legacySplit) {
+                        // Convert legacy boolean into a proper pair
+                        splitPairs.push([realVideos[0].fileId, realVideos[1].fileId]);
+                    }
+
+                    // Track which fileIds are consumed by split-screen pairs
+                    const consumedByPair = new Set<string>();
+                    for (const [a, b] of splitPairs) { consumedByPair.add(a); consumedByPair.add(b); }
+
+                    // Build ordered asset entries from user's file order
+                    // Split-screen pair is inserted at the position of the FIRST file in the pair;
+                    // the second file is consumed (not shown separately).
+                    type CompositeAsset = 
+                        | { kind: "image"; url: string }
+                        | { kind: "video"; url: string; durationSec: number; isImgToVideo: boolean }
+                        | { kind: "split"; urls: [string, string]; durationSec: number };
+
+                    const compositeAssets: CompositeAsset[] = [];
+                    const pairsEmitted = new Set<string>(); // "idA-idB" to avoid double-emit
+
+                    for (const file of allFiles) {
+                        const fid = file.fileId;
+
+                        // Check if this file is part of a split-screen pair
+                        if (consumedByPair.has(fid)) {
+                            // Find which pair(s) include this file
+                            for (const [a, b] of splitPairs) {
+                                if (a !== fid && b !== fid) continue;
+                                const pairKey = `${a}-${b}`;
+                                if (pairsEmitted.has(pairKey)) continue;
+                                pairsEmitted.add(pairKey);
+
+                                const fileA = allFiles.find((f: any) => f.fileId === a);
+                                const fileB = allFiles.find((f: any) => f.fileId === b);
+                                if (!fileA || !fileB) {
+                                    console.warn(`⚠️ Scene ${i + 1}: split pair references missing file(s), skipping pair`);
+                                    continue;
+                                }
+                                compositeAssets.push({
+                                    kind: "split",
+                                    urls: [fileA.url, fileB.url],
+                                    durationSec: 0, // will be probed below
+                                });
+                            }
+                            continue;
+                        }
+
+                        // Regular file (not in any split pair)
+                        if (file.isVideo) {
+                            compositeAssets.push({
+                                kind: "video",
+                                url: file.url,
+                                durationSec: 0, // will be probed below
+                                isImgToVideo: !!file.isImgToVideo,
+                            });
+                        } else {
+                            compositeAssets.push({ kind: "image", url: file.url });
+                        }
+                    }
+
+                    if (compositeAssets.length === 0) {
+                        imageUrls[i] = "SKIP_T2V";
+                        continue;
+                    }
+
+                    // ── Special fast paths: single image or single video only ────────
+                    if (compositeAssets.length === 1) {
+                        const single = compositeAssets[0];
+                        if (single.kind === "image") {
+                            console.log(`🖼️ Studio Scene ${i + 1}: single image → ${single.url.substring(0, 60)}`);
+                            imageUrls[i] = single.url;
+                            continue;
+                        }
+                        if (single.kind === "video") {
+                            // Probe ACTUAL video duration — critical to prevent "No frame found" crashes
+                            const probedDur = await probeVideoDuration(single.url);
+                            sceneProbedDurations[i] = Math.round(probedDur * 10) / 10;
+                            console.log(`🎬 Studio Scene ${i + 1}: single video → ${single.url.substring(0, 60)} (probed: ${sceneProbedDurations[i]}s)`);
+                            imageUrls[i] = single.url;
+                            continue;
+                        }
+                        if (single.kind === "split") {
+                            // Probe both videos in the pair — use the longer one
+                            const [d1, d2] = await Promise.all([
+                                probeVideoDuration(single.urls[0]),
+                                probeVideoDuration(single.urls[1]),
+                            ]);
+                            sceneProbedDurations[i] = Math.round(Math.max(d1, d2) * 10) / 10;
+                            const splitPayload = JSON.stringify({
+                                type: "split",
+                                urls: single.urls,
+                            });
+                            console.log(`📺 Studio Scene ${i + 1}: split-screen → ${single.urls[0].substring(0, 40)} | ${single.urls[1].substring(0, 40)} (probed: ${sceneProbedDurations[i]}s)`);
+                            imageUrls[i] = "SKIP_T2V";
+                            sceneOverrides[i] = splitPayload;
+                            continue;
+                        }
+                    }
+
+                    // ── Multiple images only → slideshow (backward compat) ───────────
+                    const hasAnyVideo = compositeAssets.some(a => a.kind === "video" || a.kind === "split");
+                    if (!hasAnyVideo) {
+                        const slideshowPayload = JSON.stringify({
+                            type: "slideshow",
+                            urls: compositeAssets.map(a => (a as any).url),
+                        });
+                        console.log(`🖼️ Studio Scene ${i + 1}: slideshow × ${compositeAssets.length} images`);
+                        imageUrls[i] = slideshowPayload;
+                        continue;
+                    }
+
+                    // ── Mixed assets or multiple videos: probe video durations ───────
+                    console.log(`📦 Studio Scene ${i + 1}: composite (${compositeAssets.length} assets). Probing video durations...`);
+                    const probePromises: Promise<void>[] = [];
+                    for (const asset of compositeAssets) {
+                        if (asset.kind === "video") {
+                            probePromises.push(
+                                probeVideoDuration(asset.url).then(d => {
+                                    asset.durationSec = Math.round(d * 10) / 10;
+                                    console.log(`  ⏱️ video ${asset.url.substring(0, 50)}: ${asset.durationSec}s`);
+                                })
+                            );
+                        } else if (asset.kind === "split") {
+                            // Probe the longer of the two URLs
+                            probePromises.push(
+                                Promise.all([
+                                    probeVideoDuration(asset.urls[0]),
+                                    probeVideoDuration(asset.urls[1]),
+                                ]).then(([d1, d2]) => {
+                                    asset.durationSec = Math.round(Math.max(d1, d2) * 10) / 10;
+                                    console.log(`  ⏱️ split-screen: ${asset.durationSec}s`);
+                                })
+                            );
+                        }
+                    }
+                    await Promise.all(probePromises);
+
+                    // Build composite payload
+                    const compositePayload = JSON.stringify({
+                        type: "composite",
+                        assets: compositeAssets,
+                    });
+                    console.log(`📦 Studio Scene ${i + 1}: composite payload ready (${compositeAssets.length} assets)`);
+                    imageUrls[i] = "SKIP_T2V";
+                    sceneOverrides[i] = compositePayload;
+                    continue;
                 }
 
                 // Only real_entity scenes get image generation (Nano Banana 2)
@@ -961,7 +1279,7 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 console.warn(`⚠️ ${totalScenes - successCount} scene image(s) could not be generated after all attempts.`);
             }
 
-            return { imageUrls };
+            return { imageUrls, sceneOverrides, sceneProbedDurations };
         });
 
         // Step 4.5: Generate high-quality AI Thumbnail using Nano Banana 2 (Leonardo AI)
@@ -1013,12 +1331,61 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
             for (let i = 0; i < totalScenes; i++) {
                 const scene = scriptData.scenes[i];
                 const sceneImageUrl = imageData.imageUrls[i];
-                const videoPrompt = scene.videoPrompt || "Slow cinematic camera movement with dramatic lighting, gentle environmental motion";
+                let videoPrompt = scene.videoPrompt || "Slow cinematic camera movement with dramatic lighting, gentle environmental motion";
+                // Strip text-related phrases that cause Kling to render text overlays
+                videoPrompt = videoPrompt
+                    .replace(/\b(text|title|caption|subtitle|label|watermark|logo|word|letter|number|overlay|heading|banner|sign|writing|inscription)s?\b/gi, '')
+                    .replace(/\s{2,}/g, ' ')
+                    .trim();
+                // Append anti-text instruction — Kling has no negative prompt support
+                videoPrompt += " -- ABSOLUTELY NO TEXT, NO TITLES, NO WORDS, NO LETTERS, NO LABELS, NO WATERMARKS, NO LOGOS in the video. Pure visual motion only.";
                 const sceneDuration = scene.duration || 10;
 
                 // Skip if no image was generated and no skip marker
                 if (!sceneImageUrl || sceneImageUrl === "") {
                     console.warn(`⚠️ Scene ${i + 1}: No image URL or skip marker, skipping video generation`);
+                    continue;
+                }
+
+                // ── STUDIO: split-screen/composite override — inject directly, skip Kling ──
+                const splitOverride = imageData.sceneOverrides?.[i];
+                if (splitOverride) {
+                    console.log(`🎬 Scene ${i + 1}: studio override (split/composite), bypassing Kling`);
+                    sceneVideoUrls[i] = splitOverride; // JSON string → Remotion will parse it
+                    // Use probed actual duration — narration-based sceneDuration causes "No frame found" crashes
+                    sceneVideoDurations[i] = imageData.sceneProbedDurations?.[i] || sceneDuration;
+                    console.log(`  ⏱️ Override duration: ${sceneVideoDurations[i]}s (probed: ${!!imageData.sceneProbedDurations?.[i]})`);
+                    continue;
+                }
+
+                // ── STUDIO: slideshow JSON — Remotion handles it via imageUrls, skip Kling ──
+                let isSlideshow = false;
+                try {
+                    const parsed = JSON.parse(sceneImageUrl);
+                    if (parsed?.type === "slideshow") { isSlideshow = true; }
+                } catch {}
+                if (isSlideshow) {
+                    console.log(`🖼️ Scene ${i + 1}: slideshow — skipping Kling, Remotion will cycle images`);
+                    // imageUrls[i] already has the slideshow JSON — Remotion reads it directly
+                    sceneVideoDurations[i] = sceneDuration;
+                    continue;
+                }
+
+                // ── STUDIO: direct user-uploaded video URL — skip Kling ──────────
+                const isDirectVideo = sceneImageUrl !== "SKIP_T2V" && sceneImageUrl !== "SKIP_VEO" &&
+                    /\.(mp4|mov|webm)/i.test(sceneImageUrl);
+                if (isDirectVideo) {
+                    console.log(`🎬 Scene ${i + 1}: direct user video, bypassing Kling`);
+                    sceneVideoUrls[i] = sceneImageUrl;
+                    // Use probed actual duration — narration-based sceneDuration causes "No frame found" crashes
+                    if (imageData.sceneProbedDurations?.[i]) {
+                        sceneVideoDurations[i] = imageData.sceneProbedDurations[i];
+                    } else {
+                        // Safety: probe now if not probed in image step
+                        const probedDur = await probeVideoDuration(sceneImageUrl);
+                        sceneVideoDurations[i] = Math.round(probedDur * 10) / 10;
+                    }
+                    console.log(`  ⏱️ Direct video duration: ${sceneVideoDurations[i]}s`);
                     continue;
                 }
 
@@ -1130,10 +1497,21 @@ Output ONLY your JSON object wrapped exactly in <json> and </json> tags.`;
                 durationInFrames: Math.floor(totalDurationSec * 30),
             };
 
-            // Avatar clip URLs for DB storage (intro + outro)
+            // Avatar clip data for DB storage — store FULL objects (not just URLs)
+            // so re-render API can reconstruct intro/outro without regenerating TTS
             const avatarClipUrls = [
-                avatarData.introClip.videoUrl,
-                avatarData.outroClip.videoUrl,
+                {
+                    videoUrl: avatarData.introClip.videoUrl,
+                    audioUrl: avatarData.introClip.audioUrl,
+                    durationSec: avatarData.introClip.durationSec,
+                    videoDurationSec: avatarData.introClip.videoDurationSec,
+                },
+                {
+                    videoUrl: avatarData.outroClip.videoUrl,
+                    audioUrl: avatarData.outroClip.audioUrl,
+                    durationSec: avatarData.outroClip.durationSec,
+                    videoDurationSec: avatarData.outroClip.videoDurationSec,
+                },
             ];
 
             console.log(`💾 Saving initial video assets for: ${videoId}`);

@@ -136,10 +136,9 @@ export async function POST(req: NextRequest) {
                     const imageBuffer = await imageRes.arrayBuffer();
                     const filename = `images/${courseId}/${globalIndex}_${Date.now()}.webp`;
 
-                    const blob = await putWithRotation(filename, imageBuffer, {
+                    const blob = await putWithRotation(filename, Buffer.from(imageBuffer), {
                         access: 'public',
                         contentType: 'image/webp',
-                        addRandomSuffix: false
                     });
 
                     console.log(`  ✅ Saved permanently: ${blob.url}`);

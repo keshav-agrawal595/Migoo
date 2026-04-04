@@ -36,38 +36,32 @@ class GeminiClient {
         model?: string;
         temperature?: number;
         maxOutputTokens?: number;
+        /** Optional JSON Schema for structured output (guarantees valid JSON) */
+        schema?: Record<string, any>;
     }): Promise<any> {
         const model = options?.model || 'gemini-2.5-flash';
         const temperature = options?.temperature ?? 0.7;
         const maxOutputTokens = options?.maxOutputTokens ?? 65536;
+        const schema = options?.schema;
 
-        console.log('🤖 Gemini API Request:', {
-            model,
-            temperature,
-            maxOutputTokens
-        });
+        console.log('🤖 Gemini API Request:', { model, temperature, maxOutputTokens, structured: !!schema });
 
-        const combinedPrompt = `${systemPrompt}\n\nUSER REQUEST:\n${userInput}\n\n---\nIMPORTANT OUTPUT RULES:
-1. Return ONLY a valid JSON array
-2. In the "html" field, use SINGLE QUOTES for HTML attributes (NOT double quotes)
-3. Example: <body style='background: #111827'> instead of <body style="background: #111827">
-4. This avoids JSON escaping issues
-5. No markdown, no code blocks, just pure JSON`;
+        // When no schema is provided, remind the model to output pure JSON (object or array).
+        // We intentionally do NOT force "array only" here — each caller dictates shape via its prompt.
+        const combinedPrompt = schema
+            ? `${systemPrompt}\n\nUSER REQUEST:\n${userInput}`
+            : `${systemPrompt}\n\nUSER REQUEST:\n${userInput}\n\n---\nCRITICAL: output ONLY raw JSON (object or array). No markdown fences, no prose. Use single quotes for HTML attribute values to avoid escaping issues.`;
+
+        // Build generation config — use structured output when schema provided
+        const generationConfig: Record<string, any> = { temperature, maxOutputTokens };
+        if (schema) {
+            generationConfig.responseMimeType = 'application/json';
+            generationConfig.responseSchema   = schema;
+        }
 
         const requestBody = {
-            contents: [
-                {
-                    parts: [
-                        {
-                            text: combinedPrompt
-                        }
-                    ]
-                }
-            ],
-            generationConfig: {
-                temperature,
-                maxOutputTokens
-            }
+            contents: [{ parts: [{ text: combinedPrompt }] }],
+            generationConfig,
         };
 
         try {
@@ -110,18 +104,23 @@ class GeminiClient {
     }
 
     /**
-     * Extract and parse JSON with smart HTML handling
+     * Extract and parse JSON — robust multi-strategy approach.
+     * Handles: <json> XML wrappers, markdown fences, unescaped quotes,
+     * literal newlines inside string values, and trailing commas.
      */
     private extractAndParseJSON(text: string): any {
         console.log('🔧 Extracting JSON from response...');
 
         let cleaned = text.trim();
 
-        // Remove markdown code blocks
-        cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+        // ── Step 1: Strip XML wrapper tags (e.g. <json>…</json>) ──────────────
+        cleaned = cleaned.replace(/<json>\s*/gi, '').replace(/\s*<\/json>/gi, '').trim();
 
-        // Find JSON boundaries
-        const arrayStart = cleaned.indexOf('[');
+        // ── Step 2: Strip markdown fences ─────────────────────────────────────
+        cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+
+        // ── Step 3: Find the outermost JSON structure via bracket tracking ─────
+        const arrayStart  = cleaned.indexOf('[');
         const objectStart = cleaned.indexOf('{');
 
         let jsonStart = -1;
@@ -135,171 +134,154 @@ class GeminiClient {
             throw new Error('No JSON found in response');
         }
 
-        let jsonStr = cleaned.substring(jsonStart).trim();
+        // Walk brackets to find exact end position
+        const openChar  = cleaned[jsonStart];
+        const closeChar = openChar === '[' ? ']' : '}';
+        let depth  = 0;
+        let inStr  = false;
+        let esc    = false;
+        let endIdx = -1;
 
-        // Try progressive parsing strategies
-        const strategies = [
-            () => JSON.parse(jsonStr),
-            () => this.parseWithHtmlFix(jsonStr),
-            () => this.parseWithSmartQuoteEscape(jsonStr),
-            () => this.parseWithBruteForce(jsonStr),
-        ];
-
-        for (let i = 0; i < strategies.length; i++) {
-            try {
-                console.log(`📝 Attempting parse strategy ${i + 1}/${strategies.length}...`);
-                const result = strategies[i]();
-                console.log(`✅ Parse strategy ${i + 1} succeeded!`);
-                return result;
-            } catch (e: any) {
-                console.warn(`⚠️ Strategy ${i + 1} failed:`, e.message);
-                if (i === strategies.length - 1) {
-                    throw new Error(`All parse strategies failed. Last error: ${e.message}`);
-                }
-            }
-        }
-    }
-
-    /**
-     * Parse JSON with HTML quote fixing
-     */
-    private parseWithHtmlFix(jsonStr: string): any {
-        console.log('🔧 Attempting HTML quote fix...');
-
-        // Strategy: Find "html" fields and fix quotes inside them
-        let fixed = jsonStr;
-
-        // Find all "html": "..." patterns
-        const htmlFieldRegex = /"html":\s*"((?:[^"\\]|\\.)*)"/g;
-
-        fixed = fixed.replace(htmlFieldRegex, (match, htmlContent) => {
-            // Inside HTML content, convert " to ' for attributes
-            let fixedHtml = htmlContent;
-
-            // Fix common HTML attribute patterns
-            // style="..." -> style='...'
-            fixedHtml = fixedHtml.replace(/(<[^>]+\s+\w+)="([^"]*?)"/g, "$1='$2'");
-
-            return `"html": "${fixedHtml}"`;
-        });
-
-        return JSON.parse(fixed);
-    }
-
-    /**
-     * Parse with smart quote escaping
-     */
-    private parseWithSmartQuoteEscape(jsonStr: string): any {
-        console.log('🔧 Attempting smart quote escape...');
-
-        let fixed = jsonStr;
-
-        // Remove trailing commas
-        fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-
-        // Fix common JSON issues
-        fixed = fixed.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
-
-        // Try to parse what we can get
-        return JSON.parse(fixed);
-    }
-
-    /**
-     * Brute force: Extract valid JSON by finding matching brackets
-     */
-    private parseWithBruteForce(jsonStr: string): any {
-        console.log('🔨 Attempting brute force JSON extraction...');
-
-        // Find the actual JSON structure by tracking brackets
-        let depth = 0;
-        let inString = false;
-        let escape = false;
-        let jsonContent = '';
-
-        for (let i = 0; i < jsonStr.length; i++) {
-            const char = jsonStr[i];
-
-            if (escape) {
-                jsonContent += char;
-                escape = false;
-                continue;
-            }
-
-            if (char === '\\') {
-                escape = true;
-                jsonContent += char;
-                continue;
-            }
-
-            if (char === '"' && !escape) {
-                inString = !inString;
-                jsonContent += char;
-                continue;
-            }
-
-            if (!inString) {
-                if (char === '[' || char === '{') {
-                    depth++;
-                } else if (char === ']' || char === '}') {
-                    depth--;
-                }
-            }
-
-            jsonContent += char;
-
-            if (depth === 0 && jsonContent.trim().length > 0) {
-                // We've found a complete JSON structure
-                break;
+        for (let i = jsonStart; i < cleaned.length; i++) {
+            const c = cleaned[i];
+            if (esc)        { esc = false; continue; }
+            if (c === '\\') { esc = true;  continue; }
+            if (c === '"')  { inStr = !inStr; continue; }
+            if (!inStr) {
+                if (c === openChar)  depth++;
+                if (c === closeChar) { depth--; if (depth === 0) { endIdx = i; break; } }
             }
         }
 
-        // Try to parse the extracted content
+        const jsonStr = endIdx !== -1
+            ? cleaned.slice(jsonStart, endIdx + 1)
+            : cleaned.slice(jsonStart);
+
+        // ── Strategy 1: Direct JSON.parse ─────────────────────────────────────
         try {
-            return JSON.parse(jsonContent);
-        } catch (e) {
-            // Last resort: Try to manually extract slide data
-            return this.manualExtraction(jsonStr);
+            console.log('📝 Attempting parse strategy 1/3...');
+            const result = JSON.parse(jsonStr);
+            console.log('✅ Parse strategy 1 succeeded!');
+            return result;
+        } catch (e: any) {
+            console.warn('⚠️ Strategy 1 failed:', e.message);
+        }
+
+        // ── Strategy 2: Flatten literal newlines then parse ──────────────────
+        try {
+            console.log('📝 Attempting parse strategy 2/4...');
+            const flattened = jsonStr
+                .replace(/\r?\n/g, ' ')          // real newlines → space
+                .replace(/,(\s*[}\]])/g, '$1');  // trailing commas
+            const result = JSON.parse(flattened);
+            console.log('✅ Parse strategy 2 succeeded!');
+            return result;
+        } catch (e: any) {
+            console.warn('⚠️ Strategy 2 failed:', e.message);
+        }
+
+        // ── Strategy 3: Smart string-value repair then parse ──────────────────
+        // Fixes unescaped double-quotes inside JSON string values and
+        // literal control characters that break JSON.parse.
+        try {
+            console.log('📝 Attempting parse strategy 3/4 (string repair)...');
+            const repaired = this.repairJsonStrings(jsonStr);
+            const result = JSON.parse(repaired);
+            console.log('✅ Parse strategy 3 succeeded!');
+            return result;
+        } catch (e: any) {
+            console.warn('⚠️ Strategy 3 failed:', e.message);
+        }
+
+        // ── Strategy 4: Regex field extraction (no JSON.parse) ───────────────
+        try {
+            console.log('📝 Attempting parse strategy 4/4 (regex extraction)...');
+            const result = this.regexExtract(jsonStr);
+            console.log('✅ Parse strategy 4 succeeded!');
+            return result;
+        } catch (e: any) {
+            console.warn('⚠️ Strategy 4 failed:', e.message);
+            throw new Error(`All parse strategies failed. Last error: ${e.message}`);
         }
     }
 
     /**
-     * Manual extraction as absolute last resort
+     * Repair unescaped double-quotes and control characters inside JSON string values.
+     * Walks character-by-character and escapes any bare " found inside a value.
      */
-    private manualExtraction(jsonStr: string): any {
-        console.log('🆘 Attempting manual data extraction...');
+    private repairJsonStrings(raw: string): string {
+        let out    = '';
+        let inStr  = false;
+        let escape = false;
+        // Replace literal tabs/newlines with spaces first
+        const s = raw.replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
 
-        const slides: any[] = [];
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (escape) { out += c; escape = false; continue; }
+            if (c === '\\') { out += c; escape = true; continue; }
+            if (c === '"') {
+                if (!inStr) {
+                    // Opening quote of a JSON string
+                    inStr = true;
+                    out += c;
+                } else {
+                    // Could be closing quote or an unescaped inner quote
+                    // Peek: if next non-space char is : , } ] then it's a real close
+                    const rest = s.slice(i + 1).trimStart();
+                    if (/^[:\,\}\]]/g.test(rest)) {
+                        inStr = false;
+                        out += c;
+                    } else {
+                        // Unescaped inner quote — escape it
+                        out += '\\"';
+                    }
+                }
+                continue;
+            }
+            out += c;
+        }
+        // Remove trailing commas before ] or }
+        return out.replace(/,(\s*[}\]])/g, '$1');
+    }
 
-        // Extract slide objects manually
-        const slideRegex = /"slideId":\s*"([^"]+)"[\s\S]*?"slideIndex":\s*(\d+)[\s\S]*?"html":\s*"((?:[^"\\]|\\.)*?)"[\s\S]*?"narration":\s*\{[\s\S]*?"fullText":\s*"((?:[^"\\]|\\.)*?)"[\s\S]*?"revealData":\s*\[(.*?)\]/g;
-
-        let match;
-        while ((match = slideRegex.exec(jsonStr)) !== null) {
-            const [, slideId, slideIndex, html, narration, revealDataStr] = match;
-
-            // Parse reveal data
-            const revealData = revealDataStr
-                .split(',')
-                .map(s => s.trim().replace(/"/g, ''))
+    /**
+     * Regex-based field extractor — works without JSON.parse.
+     * Handles: titles arrays, slides arrays, generic string arrays.
+     */
+    private regexExtract(jsonStr: string): any {
+        // ── titles array (generate-angles) ────────────────────────────────────
+        const titlesMatch = jsonStr.match(/"titles"\s*:\s*\[([\s\S]*?)\]/);
+        if (titlesMatch) {
+            const titles = [...titlesMatch[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+                .map(m => m[1].replace(/\\n/g, ' ').trim())
                 .filter(Boolean);
+            if (titles.length > 0) return { titles };
+        }
 
+        // ── generic string array at root level ────────────────────────────────
+        if (jsonStr.trim().startsWith('[')) {
+            const items = [...jsonStr.matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+                .map(m => m[1].replace(/\\n/g, ' ').trim())
+                .filter(s => s.length > 5);
+            if (items.length > 0) return items;
+        }
+
+        // ── slide objects ──────────────────────────────────────────────────────
+        const slideRegex = /"slideId"\s*:\s*"([^"]+)"[\s\S]*?"slideIndex"\s*:\s*(\d+)[\s\S]*?"html"\s*:\s*"((?:[^"\\]|\\.)*?)"[\s\S]*?"narration"\s*:\s*\{[\s\S]*?"fullText"\s*:\s*"((?:[^"\\]|\\.)*?)"/g;
+        const slides: any[] = [];
+        let m;
+        while ((m = slideRegex.exec(jsonStr)) !== null) {
             slides.push({
-                slideId,
-                slideIndex: parseInt(slideIndex),
-                html: html.replace(/\\n/g, '\n').replace(/\\"/g, '"'),
-                narration: {
-                    fullText: narration.replace(/\\n/g, '\n').replace(/\\"/g, '"')
-                },
-                revealData
+                slideId:    m[1],
+                slideIndex: parseInt(m[2]),
+                html:       m[3].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
+                narration:  { fullText: m[4].replace(/\\n/g, '\n').replace(/\\"/g, '"') },
             });
         }
+        if (slides.length > 0) return slides;
 
-        if (slides.length === 0) {
-            throw new Error('Could not extract any slides from response');
-        }
-
-        console.log(`✅ Manually extracted ${slides.length} slides`);
-        return slides;
+        throw new Error('Could not extract any structured data from response');
     }
 
     /**

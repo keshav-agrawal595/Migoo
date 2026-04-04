@@ -110,6 +110,12 @@ export const shortVideoAssets = pgTable("short_video_assets", {
     // Avatar clip data from step 5.5
     avatarClipUrls: json("avatar_clip_urls"),            // ["", "", "url3", "", "", "url6"] per scene
 
+    // Director's Chair Studio fields (nullable — normal series videos leave these unset)
+    // Per-scene asset types: 'kling_video' | 'user_upload' | 'ai_image' | 'doc_image'
+    sceneAssetTypes: json("scene_asset_types"),
+    // Source context (Sarvam-extracted markdown or user-typed text) fed to Gemini
+    contextMarkdown: text("context_markdown"),
+
     // Final rendered video
     videoUrl: text("video_url"),
     thumbnailUrl: text("thumbnail_url"),

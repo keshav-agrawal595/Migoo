@@ -454,15 +454,28 @@ async function submitLeonardoJobWithModel(
     }
     throw new Error(`All keys failed: ${errors.join(", ")}`);
 }
-// ── Nano Banana (gemini-2.5-flash-image) — 9:16 portrait dimensions ──────────
+// ── Nano Banana 2 → Nano Banana fallback — 9:16 portrait dimensions ──────────
 // Valid pair per Leonardo docs: 768 × 1344
 const NB_9x16_WIDTH  = 768;
 const NB_9x16_HEIGHT = 1344;
 
 /**
- * Generate an image using Nano Banana (gemini-2.5-flash-image).
- * Fast, high quality — 30-60 seconds per image.
- * Uses v2 API with key rotation.
+ * Model priority list for Nano Banana image generation.
+ * nano-banana-2 is tried first (priority), gemini-2.5-flash-image (Nano Banana v1) is the fallback.
+ *
+ * API model codes (per Leonardo.AI docs):
+ *   Nano Banana 2  → "nano-banana-2"
+ *   Nano Banana v1 → "gemini-2.5-flash-image"
+ */
+const NANO_BANANA_MODEL_PRIORITY = [
+    "nano-banana-2",            // ← Primary: Nano Banana 2 (always try first)
+    "gemini-2.5-flash-image",   // ← Fallback: Nano Banana v1 (if nb-2 fails)
+];
+
+/**
+ * Generate an image using Nano Banana 2 (priority) with Nano Banana as fallback.
+ * Tries nano-banana-2 across ALL available keys first.
+ * If all keys fail with nano-banana-2, falls back to nano-banana across all keys.
  *
  * Default: 768×1344 (valid 9:16 portrait pair per Leonardo docs)
  * For thumbnails: pass 1024×1024 explicitly.
@@ -476,20 +489,47 @@ export async function generateNanoBananaImage(
 ): Promise<string> {
     const enhancedPrompt = enhanceForRealism(prompt);
 
-    console.log(`🍌 Generating image with Nano Banana (gemini-2.5-flash-image, ${width}×${height})...`);
+    const allErrors: string[] = [];
 
-    const { generationId, apiKey } = await submitLeonardoJobV2(
-        "gemini-2.5-flash-image",
-        enhancedPrompt,
-        width,
-        height,
-        styleUUID
+    for (const model of NANO_BANANA_MODEL_PRIORITY) {
+        // Respect cancellation before each model attempt
+        if (cancelSignal?.cancelled) {
+            throw new Error(`Image generation cancelled by force stop.`);
+        }
+
+        console.log(`🍌 Generating image with ${model} (${width}×${height})...`);
+
+        try {
+            const { generationId, apiKey } = await submitLeonardoJobV2(
+                model,
+                enhancedPrompt,
+                width,
+                height,
+                styleUUID
+            );
+
+            // Poll up to 5 minutes (150 × 2s)
+            const imageUrl = await pollLeonardoJob(generationId, apiKey, 150, cancelSignal);
+            console.log(`✅ ${model} image ready!`);
+            return imageUrl;
+
+        } catch (err: any) {
+            // Propagate cancellation immediately — don't try fallback
+            if (
+                cancelSignal?.cancelled ||
+                err?.message?.includes('cancelled by force stop')
+            ) {
+                throw err;
+            }
+
+            console.warn(`⚠️ ${model} failed (${err?.message?.substring(0, 120)}). Trying next model...`);
+            allErrors.push(`[${model}]: ${err?.message}`);
+        }
+    }
+
+    throw new Error(
+        `All Nano Banana models failed:\n${allErrors.join('\n')}`
     );
-
-    // Poll up to 5 minutes (150 × 2s)
-    const imageUrl = await pollLeonardoJob(generationId, apiKey, 150, cancelSignal);
-    console.log(`✅ Nano Banana image ready!`);
-    return imageUrl;
 }
 
 
@@ -507,8 +547,9 @@ function enhanceForRealism(prompt: string): string {
 }
 /**
  * submitLeonardoJobV2
- * Uses the REST v2 endpoint (Nano Banana 2).
+ * Uses the REST v2 endpoint (Nano Banana 2 / Nano Banana).
  * Polls via the v1 status endpoint (same generation system under the hood).
+ * Tries all available keys with the specified model.
  */
 async function submitLeonardoJobV2(
     model: string,
@@ -526,7 +567,7 @@ async function submitLeonardoJobV2(
     for (const apiKey of shuffledKeys) {
         const keyLabel = `Key #${allKeys.indexOf(apiKey) + 1}`;
         try {
-            console.log(`⏳ Submitting Nano Banana 2 job (${keyLabel})...`);
+            console.log(`⏳ Submitting ${model} job (${keyLabel})...`);
             const response = await fetch("https://cloud.leonardo.ai/api/rest/v2/generations", {
                 method: "POST",
                 headers: {
@@ -562,7 +603,7 @@ async function submitLeonardoJobV2(
             }
 
             const result = await response.json();
-            console.log(`📦 Nano Banana 2 raw response: ${JSON.stringify(result).substring(0, 200)}`);
+            console.log(`📦 ${model} raw response: ${JSON.stringify(result).substring(0, 200)}`);
 
             // v2 API response shape: { generate: { generationId: '...', cost: {...} } }
             const generationId =
@@ -579,12 +620,12 @@ async function submitLeonardoJobV2(
                 continue;
             }
 
-            console.log(`✅ Nano Banana 2 job submitted! ${keyLabel}, id: ${generationId}`);
+            console.log(`✅ ${model} job submitted! ${keyLabel}, id: ${generationId}`);
             return { generationId, apiKey };
         } catch (e: any) {
-            console.warn(`🧨 Error with ${keyLabel}: ${e.message}`);
+            console.warn(`🧨 Error with ${keyLabel} (${model}): ${e.message}`);
             errors.push(`${keyLabel}: ${e.message}`);
         }
     }
-    throw new Error(`All ${allKeys.length} Leonardo keys failed (v2): ${errors.join(", ")}`);
+    throw new Error(`All ${allKeys.length} Leonardo keys failed with model '${model}': ${errors.join(", ")}`);
 }

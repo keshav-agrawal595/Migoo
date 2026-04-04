@@ -18,6 +18,7 @@ interface NavItem {
     href: string
     icon: React.ReactNode
     description: string
+    badge?: string
 }
 
 const navItems: NavItem[] = [
@@ -32,6 +33,13 @@ const navItems: NavItem[] = [
         href: '/short-generator',
         icon: <Clapperboard className="w-5 h-5" />,
         description: 'Create viral short series',
+    },
+    {
+        label: 'Migoo Studio',
+        href: '/studio',
+        icon: <Sparkles className="w-5 h-5" />,
+        description: "Director's Chair",
+        badge: '⚡',
     },
 ]
 
@@ -93,8 +101,15 @@ function AppSidebar() {
                             </span>
 
                             {!collapsed && (
-                                <div className="overflow-hidden">
-                                    <p className="truncate">{item.label}</p>
+                                <div className="overflow-hidden flex-1">
+                                    <div className="flex items-center gap-1.5">
+                                        <p className="truncate">{item.label}</p>
+                                        {item.badge && (
+                                            <span className="text-[9px] leading-none px-1 py-0.5 rounded-full bg-violet-500/20 text-violet-400 border border-violet-400/30 font-bold shrink-0">
+                                                {item.badge}
+                                            </span>
+                                        )}
+                                    </div>
                                     <p className={`text-[10px] truncate ${active ? 'text-primary/60' : 'text-muted-foreground/60'}`}>
                                         {item.description}
                                     </p>

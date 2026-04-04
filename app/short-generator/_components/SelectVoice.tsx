@@ -167,7 +167,7 @@ function SelectVoice({ selectedLanguage, selectedVoice, onSelectLanguage, onSele
             <div>
                 <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                        Narrator Voice <span className="normal-case font-normal">— powered by Sarvam AI</span>
+                        Narrator Voice <span className="normal-case font-normal">— powered by AI</span>
                     </h3>
                     <span className="text-xs text-muted-foreground/60">Click 🔊 to preview</span>
                 </div>
