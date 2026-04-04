@@ -239,10 +239,21 @@ async function downloadToPublic(url: string | undefined, destRelPath: string): P
         const buffer = Buffer.from(await res.arrayBuffer());
         fs.writeFileSync(absolutePath, buffer);
         console.log(`✅ Downloaded ${destRelPath}`);
-        return `/${destRelPath}`;
+
+        // ── CRITICAL FIX: Return an http://localhost URL, NOT a /path string ──
+        // On Windows, Remotion converts /path strings to file:///A:/... absolute
+        // URLs via staticFile(). The compositor (Rust) rejects file:// scheme with
+        // "Can only download URLs starting with http:// or https://". The Audio
+        // component in Puppeteer rejects them with ERR_UNKNOWN_URL_SCHEME.
+        //
+        // By returning http://localhost:PORT/destRelPath, the compositor fetches
+        // the file from the already-running Next.js dev server — which serves
+        // everything in public/ at the root — and it works on any drive letter.
+        const port = process.env.PORT || '3000';
+        return `http://localhost:${port}/${destRelPath}`;
     } catch (err: any) {
-        console.warn(`⚠️ Failed to download ${sanitizedUrl}: ${err.message}. Falling back to remote URL.`);
-        return sanitizedUrl;
+        console.warn(`⚠️ Failed to download ${sanitizedUrl}: ${err.message}. Using remote URL.`);
+        return sanitizedUrl; // fall back to original remote URL
     }
 }
 
@@ -400,9 +411,10 @@ async function renderLocally(videoId: string, props: Record<string, any>) {
                 if (fs.existsSync(introVideoSrc)) {
                     fs.copyFileSync(introVideoSrc, introVideoDest);
                     const initDuration = await probeVideoDuration(introVideoDest);
+                    const port = process.env.PORT || '3000';
                     props.introClip = { 
                         ...props.introClip, 
-                        videoUrl: `/${assetsDirRel}/intro_video.mp4`,
+                        videoUrl: `http://localhost:${port}/${assetsDirRel}/intro_video.mp4`,
                         videoDurationSec: initDuration 
                     };
                     console.log(`📋 Copied intro avatar video → ${introVideoDest} (${initDuration?.toFixed(3)}s)`);
@@ -425,9 +437,10 @@ async function renderLocally(videoId: string, props: Record<string, any>) {
                 if (fs.existsSync(outroVideoSrc)) {
                     fs.copyFileSync(outroVideoSrc, outroVideoDest);
                     const initDuration = await probeVideoDuration(outroVideoDest);
+                    const port = process.env.PORT || '3000';
                     props.outroClip = { 
                         ...props.outroClip, 
-                        videoUrl: `/${assetsDirRel}/outro_video.mp4`,
+                        videoUrl: `http://localhost:${port}/${assetsDirRel}/outro_video.mp4`,
                         videoDurationSec: initDuration 
                     };
                     console.log(`📋 Copied outro avatar video → ${outroVideoDest} (${initDuration?.toFixed(3)}s)`);

@@ -631,37 +631,34 @@ export function resolveLocalUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
   let cleanUrl = url;
 
-  // 1. Force stripping of NEXT_PUBLIC_APP_URL, localhosts, and 127.0.0.1
-  if (cleanUrl.includes('localhost') || cleanUrl.includes('127.0.0.1')) {
-    try {
-      cleanUrl = new URL(cleanUrl).pathname;
-    } catch (e) {}
-  }
-  
-  // Also strip any custom vercel URL domains if they exist but we didn't catch it
-  if (cleanUrl.startsWith('http') && cleanUrl.includes('/public/avatars/')) {
-       cleanUrl = cleanUrl.substring(cleanUrl.indexOf('/public/avatars/'));
-  }
-  if (cleanUrl.startsWith('http') && cleanUrl.includes('/avatars/')) {
-       cleanUrl = cleanUrl.substring(cleanUrl.indexOf('/avatars/'));
+  // ── CRITICAL FIX (Windows / non-C: drive) ────────────────────────────────
+  // Remotion's staticFile() on Windows generates file:///A:/React%20Projects/...
+  // URLs. The compositor (Rust) ONLY accepts http:// or https:// and rejects
+  // file:// with "Can only download URLs starting with http:// or https://".
+  // The Audio component in Puppeteer also fails with ERR_UNKNOWN_URL_SCHEME.
+  //
+  // All locally-downloaded assets are now served as http://localhost:PORT/...
+  // Those URLs MUST pass through here UNCHANGED — never convert them to
+  // staticFile() which produces broken file:/// URLs on Windows.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+    return cleanUrl;
   }
 
-  // 2. Aggressively Strip any exact sequence of '/public/' or 'public/' from the start of the path
+  if (cleanUrl.startsWith('file:///')) return cleanUrl;
+
+  // Strip /public/ prefix from legacy paths
   while (cleanUrl.startsWith('/public/') || cleanUrl.startsWith('public/')) {
-      cleanUrl = cleanUrl.replace(/^\/?public\//, '');
+    cleanUrl = cleanUrl.replace(/^\/?public\//, '');
   }
 
-  // 3. If it is an avatar, guarantee it maps to staticFile
+  // Avatar static files → staticFile() (these stay in the bundle)
   if (cleanUrl.includes('avatars/avatar')) {
-      // It is a local file.
-      const match = cleanUrl.match(/avatars\/avatar[0-9]+-(intro|outro)\.(mp4|webm)/);
-      if (match) return staticFile(match[0]);
+    const match = cleanUrl.match(/avatars\/avatar[0-9]+-(intro|outro)\.(mp4|webm)/);
+    if (match) return staticFile(match[0]);
   }
 
-  // 4. If it is STILL http or a direct local file uri, keep it as is.
-  if (cleanUrl.startsWith('http') || cleanUrl.startsWith('file:///')) return cleanUrl;
-
-  // 5. Otherwise map to staticFile (local downloads like tmp/assets)
+  // Remaining relative paths → staticFile (used in cloud/GitHub-Actions renders)
   const finalUrl = cleanUrl.startsWith('/') ? cleanUrl.substring(1) : cleanUrl;
   return staticFile(finalUrl);
 }
