@@ -5,13 +5,13 @@ import { loadFont as loadOrbitron } from '@remotion/google-fonts/Orbitron';
 import { loadFont as loadPlayfair } from '@remotion/google-fonts/PlayfairDisplay';
 import { loadFont as loadPoppins } from '@remotion/google-fonts/Poppins';
 import { loadFont as loadSpaceMono } from '@remotion/google-fonts/SpaceMono';
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   AbsoluteFill,
   Audio,
   Img,
   interpolate,
-  OffthreadVideo,
+  Video,
   Sequence,
   staticFile,
   useCurrentFrame,
@@ -58,9 +58,34 @@ export interface CompositionProps {
   durationInFrames: number;
 }
 
-// Safety margin: never seek into the last 0.3s of a source video to avoid
-// compositor "No frame found" errors at GOP/file boundaries.
-const SAFETY_MARGIN_SEC = 1.0;
+// Safety margin: avoid seeking into the very last portion of a source video.
+// Using browser-native <Video> decoder (not Rust compositor), so 0.5s is sufficient.
+const SAFETY_MARGIN_SEC = 0.5;
+
+// ─── SafeImg wrapper: catches image load errors gracefully ───────────────────
+// Instead of letting Remotion's cancelRender fire on 403/network errors,
+// we catch the error and show a black frame as fallback.
+const SafeImg: React.FC<React.ComponentProps<typeof Img>> = (props) => {
+  const [hasError, setHasError] = useState(false);
+  const handleError = useCallback(() => {
+    console.warn(`⚠️ SafeImg: Failed to load image: ${props.src?.toString().substring(0, 80)}...`);
+    setHasError(true);
+  }, [props.src]);
+
+  if (hasError) {
+    return (
+      <AbsoluteFill style={{ backgroundColor: '#1a1a2e' }}>
+        <div style={{
+          width: '100%', height: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
+        }} />
+      </AbsoluteFill>
+    );
+  }
+
+  return <Img {...props} onError={handleError} />;
+};
 
 // ─── Crossfade overlay: fades in then out to create a smooth bridge ───────────
 const CrossfadeBridge: React.FC<{ durationInFrames: number }> = ({ durationInFrames }) => {
@@ -95,28 +120,26 @@ const AvatarClipScene: React.FC<{
   const resolvedAudioUrl = useMemo(() => resolveLocalUrl(audioUrl) || "", [audioUrl]);
 
   // Stretch/compress the avatar video to fill the entire sequence duration.
-  // Without this, Remotion crashes with "No frame found at position" when
-  // the TTS audio (and thus the sequence) is longer than the video file.
+  // CRITICAL FIX: Do NOT clamp pbRate at 0.5 — a short video over a long
+  // TTS needs a very low rate (e.g. 0.08) to avoid seeking past the end.
   const pbRate = useMemo(() => {
     if (!videoDurationSec || !durationInFrames) return 1;
     const targetDurationSec = durationInFrames / fps;
-    // Subtract fixed safety margin from video duration so we never seek
-    // into the last 0.3s — prevents compositor errors at file boundaries.
-    const safeVideoDuration = Math.max(1, videoDurationSec - SAFETY_MARGIN_SEC);
+    const safeVideoDuration = Math.max(0.5, videoDurationSec - SAFETY_MARGIN_SEC);
     const rate = safeVideoDuration / targetDurationSec;
-    return Math.max(0.25, Math.min(4, rate));
+    return Math.max(0.01, Math.min(4, rate));
   }, [videoDurationSec, durationInFrames, fps]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
       {/* Muted HeyGen video — lip movements visible, no original audio */}
-      <OffthreadVideo
+      <Video
         src={resolvedVideoUrl}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-        muted={true}
+        muted
         crossOrigin="anonymous"
         playbackRate={pbRate}
-        toneMapped={false}
+        pauseWhenBuffering
       />
       {/* Sarvam-generated English voice audio */}
       {resolvedAudioUrl && <Audio src={resolvedAudioUrl} crossOrigin="anonymous" />}
@@ -147,7 +170,7 @@ const VideoScene: React.FC<{
 
   return (
     <AbsoluteFill>
-      <Img
+      <SafeImg
         src={imageUrl}
         style={{
           width: '100%',
@@ -175,23 +198,23 @@ const VideoClipScene: React.FC<{
 
   const pbRate = useMemo(() => {
     const actualLength = sourceDuration && sourceDuration > 0 ? sourceDuration : 5;
-    const safeLength = Math.max(1, actualLength - SAFETY_MARGIN_SEC);
-    return Math.max(0.15, Math.min(4.0, safeLength / targetDurationSec));
+    const safeLength = Math.max(0.5, actualLength - SAFETY_MARGIN_SEC);
+    return Math.max(0.01, Math.min(4.0, safeLength / targetDurationSec));
   }, [sourceDuration, targetDurationSec]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      <OffthreadVideo
+      <Video
         src={resolvedVideoUrl}
         style={{
           width: '100%',
           height: '100%',
           objectFit: 'cover',
         }}
-        muted={true}
+        muted
         playbackRate={pbRate}
         crossOrigin="anonymous"
-        toneMapped={false}
+        pauseWhenBuffering
       />
     </AbsoluteFill>
   );
@@ -222,7 +245,7 @@ const SlideshowScene: React.FC<{
         const resolvedUrl = resolveLocalUrl(url) || '';
         return (
           <AbsoluteFill key={idx} style={{ opacity }}>
-            <Img
+            <SafeImg
               src={resolvedUrl}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               crossOrigin="anonymous"
@@ -243,8 +266,8 @@ const SplitScreenScene: React.FC<{
 }> = ({ urls, duration, sourceDuration }) => {
   const { fps } = useVideoConfig();
   const targetDurationSec = duration / fps;
-  const safeSourceDuration = Math.max(1, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
-  const pbRate = Math.max(0.15, Math.min(4.0, safeSourceDuration / targetDurationSec));
+  const safeSourceDuration = Math.max(0.5, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
+  const pbRate = Math.max(0.01, Math.min(4.0, safeSourceDuration / targetDurationSec));
 
   const topUrl    = useMemo(() => resolveLocalUrl(urls[0]) || '', [urls]);
   const bottomUrl = useMemo(() => resolveLocalUrl(urls[1]) || '', [urls]);
@@ -253,20 +276,20 @@ const SplitScreenScene: React.FC<{
     <AbsoluteFill style={{ backgroundColor: 'black', flexDirection: 'column' }}>
       {/* Top half */}
       <div style={{ flex: 1, overflow: 'hidden', borderBottom: '3px solid rgba(139,92,246,0.6)' }}>
-        <OffthreadVideo
+        <Video
           src={topUrl}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           muted playbackRate={pbRate}
-          crossOrigin="anonymous" toneMapped={false}
+          crossOrigin="anonymous" pauseWhenBuffering
         />
       </div>
       {/* Bottom half */}
       <div style={{ flex: 1, overflow: 'hidden' }}>
-        <OffthreadVideo
+        <Video
           src={bottomUrl}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           muted playbackRate={pbRate}
-          crossOrigin="anonymous" toneMapped={false}
+          crossOrigin="anonymous" pauseWhenBuffering
         />
       </div>
     </AbsoluteFill>
@@ -454,7 +477,7 @@ const CompositeImageSub: React.FC<{
 
   return (
     <AbsoluteFill>
-      <Img
+      <SafeImg
         src={resolvedUrl}
         style={{
           width: '100%',
@@ -480,19 +503,19 @@ const CompositeVideoSub: React.FC<{
   // Stretch video to exactly fill allocated time (no freeze)
   const pbRate = useMemo(() => {
     const actual = sourceDuration && sourceDuration > 0 ? sourceDuration : 5;
-    const safeActual = Math.max(1, actual - SAFETY_MARGIN_SEC);
-    return Math.max(0.15, Math.min(4.0, safeActual / targetSec));
+    const safeActual = Math.max(0.5, actual - SAFETY_MARGIN_SEC);
+    return Math.max(0.01, Math.min(4.0, safeActual / targetSec));
   }, [sourceDuration, targetSec]);
 
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      <OffthreadVideo
+      <Video
         src={resolvedUrl}
         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         muted
         playbackRate={pbRate}
         crossOrigin="anonymous"
-        toneMapped={false}
+        pauseWhenBuffering
       />
     </AbsoluteFill>
   );
@@ -505,8 +528,8 @@ const CompositeSplitSub: React.FC<{
 }> = ({ urls, duration, sourceDuration }) => {
   const { fps } = useVideoConfig();
   const targetSec = duration / fps;
-  const safeSrcDur = Math.max(1, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
-  const pbRate = Math.max(0.15, Math.min(4.0, safeSrcDur / targetSec));
+  const safeSrcDur = Math.max(0.5, (sourceDuration || 5) - SAFETY_MARGIN_SEC);
+  const pbRate = Math.max(0.01, Math.min(4.0, safeSrcDur / targetSec));
 
   const topUrl = useMemo(() => resolveLocalUrl(urls[0]) || '', [urls]);
   const bottomUrl = useMemo(() => resolveLocalUrl(urls[1]) || '', [urls]);
@@ -514,19 +537,19 @@ const CompositeSplitSub: React.FC<{
   return (
     <AbsoluteFill style={{ backgroundColor: 'black', flexDirection: 'column' }}>
       <div style={{ flex: 1, overflow: 'hidden', borderBottom: '3px solid rgba(139,92,246,0.6)' }}>
-        <OffthreadVideo
+        <Video
           src={topUrl}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           muted playbackRate={pbRate}
-          crossOrigin="anonymous" toneMapped={false}
+          crossOrigin="anonymous" pauseWhenBuffering
         />
       </div>
       <div style={{ flex: 1, overflow: 'hidden' }}>
-        <OffthreadVideo
+        <Video
           src={bottomUrl}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           muted playbackRate={pbRate}
-          crossOrigin="anonymous" toneMapped={false}
+          crossOrigin="anonymous" pauseWhenBuffering
         />
       </div>
     </AbsoluteFill>
